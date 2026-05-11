@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="164" height="54" viewBox="0 0 164 54" role="img" aria-label="DMRC logo placeholder">
+  <rect width="164" height="54" rx="14" fill="#ffffff"/>
+  <circle cx="29" cy="27" r="18" fill="#092b6f"/>
+  <path d="M16 28c8-15 20-15 28 0" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
+  <path d="M16 26c8 15 20 15 28 0" fill="none" stroke="#d71920" stroke-width="4" stroke-linecap="round"/>
+  <text x="56" y="25" font-family="Arial, sans-serif" font-size="18" font-weight="800" fill="#092b6f">DMRC</text>
+  <text x="56" y="40" font-family="Arial, sans-serif" font-size="9" font-weight="700" fill="#64748b">Inspection Platform</text>
+</svg>
