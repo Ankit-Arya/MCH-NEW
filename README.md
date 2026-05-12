@@ -21,7 +21,6 @@ This project implements the complete workflow reference:
 7. KPI-6 monthly score and penalty calculation
 8. Dashboards, audit trail, workflow history and report endpoints
 
-> This is a strong production-ready base, not a final department-certified release. Before live rollout, confirm grading scale, video duration rule, retention policy, SSL certificates, AD/LDAP integration, and final penalty approval process.
 
 ---
 
@@ -116,7 +115,6 @@ mch-inspection-platform/
 
 ## Latest UI + Reports Update
 
-This package includes the feedback update for a more professional frontend, DMRC-style header branding, dashboard charts with weekly/monthly/yearly filters, seeded dummy data, and PDF report downloads for single and ranged inspections.
 
 See:
 
