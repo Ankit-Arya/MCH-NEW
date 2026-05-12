@@ -1,7 +1,5 @@
 # MCH KPI-6 Real-Time Inspection Platform
 
-Production-oriented on-prem starter project for **Mechanized Cleaning & Housekeeping (MCH) KPI-6 Level of Cleanliness** inspections.
-
 Stack:
 
 - **Backend:** FastAPI, SQLAlchemy, Alembic, PostgreSQL, JWT RBAC
