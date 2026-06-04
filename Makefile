@@ -26,3 +26,22 @@ backup:
 
 restore:
 	bash scripts/restore_postgres.sh
+
+
+restart-api:
+	docker compose restart api
+
+restart-frontend:
+	docker compose restart frontend
+
+restart-nginx:
+	docker compose restart nginx
+
+migrate:
+	docker compose exec api alembic upgrade head
+
+logs-api:
+	docker compose logs -f api
+
+logs-frontend:
+	docker compose logs -f frontend

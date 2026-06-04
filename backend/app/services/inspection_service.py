@@ -1,5 +1,5 @@
 from datetime import datetime, date
-from fastapi import HTTPException, status
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from app.models.all_models import (
     ContractStation,
@@ -7,6 +7,7 @@ from app.models.all_models import (
     Inspection,
     InspectionAttribute,
     InspectionAttributeScore,
+    InspectionEntry,
     InspectionMedia,
     InspectionStatus,
     InspectionSubArea,
@@ -15,13 +16,21 @@ from app.models.all_models import (
     MediaType,
     User,
 )
-from app.schemas.inspection import InspectionStartIn, InspectionDraftIn
+from app.schemas.inspection import InspectionStartIn, InspectionDraftIn, InspectionEntryCreate
 from app.core.permissions import require_station_access
 from app.services.audit_service import audit_log
 
 
 def generate_inspection_no(station_id: int, user_id: int) -> str:
     return f"INSP-{datetime.utcnow():%Y%m%d%H%M%S}-{station_id}-{user_id}"
+
+
+def generate_entry_no(db: Session, inspection_id: int) -> str:
+    count = db.query(InspectionEntry).filter(
+        InspectionEntry.inspection_id == inspection_id,
+        InspectionEntry.is_deleted == False,  # noqa: E712
+    ).count()
+    return f"ENT-{count + 1:04d}"
 
 
 def create_inspection(db: Session, payload: InspectionStartIn, user: User) -> Inspection:
@@ -55,7 +64,111 @@ def create_inspection(db: Session, payload: InspectionStartIn, user: User) -> In
     return inspection
 
 
+def _grade_for_inspection(db: Session, inspection: Inspection, grade_code: str) -> GradingOption:
+    grade = db.query(GradingOption).filter(
+        GradingOption.scheme_id == inspection.contract.grading_scheme_id,
+        GradingOption.grade_code == grade_code,
+    ).first()
+    if not grade:
+        raise HTTPException(status_code=400, detail=f"Invalid grade {grade_code} for this contract grading scheme")
+    return grade
+
+
+def save_entry(db: Session, inspection: Inspection, payload: InspectionEntryCreate, user: User) -> InspectionEntry:
+    if inspection.status not in [InspectionStatus.DRAFT, InspectionStatus.RETURNED_FOR_CLARIFICATION]:
+        raise HTTPException(status_code=400, detail="Entries can be added only while inspection is draft/returned")
+    require_station_access(db, user, inspection.station_id)
+
+    attribute = db.get(InspectionAttribute, payload.attribute_id)
+    if not attribute or not attribute.is_active:
+        raise HTTPException(status_code=400, detail="Invalid inspection attribute")
+    sub_area = db.get(InspectionSubArea, payload.sub_area_id)
+    if not sub_area or not sub_area.is_active or sub_area.attribute_id != attribute.id:
+        raise HTTPException(status_code=400, detail="Invalid sub-area for selected attribute")
+    grade = _grade_for_inspection(db, inspection, payload.grade_code)
+
+    entry = InspectionEntry(
+        inspection_id=inspection.id,
+        entry_no=generate_entry_no(db, inspection.id),
+        attribute_id=attribute.id,
+        sub_area_id=sub_area.id,
+        grade_code=grade.grade_code,
+        grade_percentage=grade.percentage,
+        remarks=payload.remarks,
+        captured_latitude=payload.captured_latitude,
+        captured_longitude=payload.captured_longitude,
+        gps_accuracy=payload.gps_accuracy,
+        captured_at=payload.captured_at or datetime.utcnow(),
+        created_by=user.id,
+    )
+    db.add(entry)
+    db.flush()
+    audit_log(db, actor=user, action="INSPECTION_ENTRY_CREATED", entity_type="InspectionEntry", entity_id=entry.id, new_value={"inspection_id": inspection.id, "entry_no": entry.entry_no})
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+def entry_to_dict(db: Session, entry: InspectionEntry) -> dict:
+    photo_count = db.query(InspectionMedia).filter_by(
+        inspection_entry_id=entry.id,
+        media_type=MediaType.PHOTO,
+        is_deleted=False,
+    ).count()
+    video_count = db.query(InspectionMedia).filter_by(
+        inspection_entry_id=entry.id,
+        media_type=MediaType.VIDEO,
+        is_deleted=False,
+    ).count()
+    return {
+        "id": entry.id,
+        "inspection_id": entry.inspection_id,
+        "entry_no": entry.entry_no,
+        "attribute_id": entry.attribute_id,
+        "attribute_name": entry.attribute.name if entry.attribute else None,
+        "sub_area_id": entry.sub_area_id,
+        "sub_area_name": entry.sub_area.name if entry.sub_area else None,
+        "grade_code": entry.grade_code,
+        "grade_percentage": entry.grade_percentage,
+        "remarks": entry.remarks,
+        "captured_latitude": entry.captured_latitude,
+        "captured_longitude": entry.captured_longitude,
+        "gps_accuracy": entry.gps_accuracy,
+        "captured_at": entry.captured_at,
+        "created_by": entry.created_by,
+        "created_at": entry.created_at,
+        "photo_count": photo_count,
+        "video_count": video_count,
+    }
+
+
+def list_entries(db: Session, inspection_id: int) -> list[dict]:
+    entries = db.query(InspectionEntry).filter(
+        InspectionEntry.inspection_id == inspection_id,
+        InspectionEntry.is_deleted == False,  # noqa: E712
+    ).order_by(InspectionEntry.id).all()
+    return [entry_to_dict(db, e) for e in entries]
+
+
+def soft_delete_entry(db: Session, inspection: Inspection, entry_id: int, user: User) -> None:
+    if inspection.status not in [InspectionStatus.DRAFT, InspectionStatus.RETURNED_FOR_CLARIFICATION]:
+        raise HTTPException(status_code=400, detail="Entries can be deleted only before submission")
+    require_station_access(db, user, inspection.station_id)
+    entry = db.get(InspectionEntry, entry_id)
+    if not entry or entry.inspection_id != inspection.id or entry.is_deleted:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    entry.is_deleted = True
+    for media in entry.media:
+        media.is_deleted = True
+    audit_log(db, actor=user, action="INSPECTION_ENTRY_DELETED", entity_type="InspectionEntry", entity_id=entry.id)
+    db.commit()
+
+
 def save_draft(db: Session, inspection: Inspection, payload: InspectionDraftIn, user: User) -> Inspection:
+    """Legacy checklist draft save retained for backward compatibility.
+
+    New entry-based UI does not call this route.
+    """
     if inspection.status not in [InspectionStatus.DRAFT, InspectionStatus.RETURNED_FOR_CLARIFICATION]:
         raise HTTPException(status_code=400, detail="Only draft or returned inspection can be edited")
     require_station_access(db, user, inspection.station_id)
@@ -93,27 +206,50 @@ def save_draft(db: Session, inspection: Inspection, payload: InspectionDraftIn, 
     return inspection
 
 
+def submit_entry_based_inspection(db: Session, inspection: Inspection, user: User, remarks: str | None = None) -> Inspection:
+    if inspection.status not in [InspectionStatus.DRAFT, InspectionStatus.RETURNED_FOR_CLARIFICATION]:
+        raise HTTPException(status_code=400, detail="Only draft or returned inspection can be submitted")
+    require_station_access(db, user, inspection.station_id)
+
+    entries = db.query(InspectionEntry).filter(
+        InspectionEntry.inspection_id == inspection.id,
+        InspectionEntry.is_deleted == False,  # noqa: E712
+    ).order_by(InspectionEntry.id).all()
+    if not entries:
+        raise HTTPException(status_code=400, detail="Add at least one inspection entry before submitting")
+
+    missing_photo = []
+    for entry in entries:
+        photo_count = db.query(InspectionMedia).filter_by(
+            inspection_entry_id=entry.id,
+            media_type=MediaType.PHOTO,
+            is_deleted=False,
+        ).count()
+        if photo_count < 1:
+            missing_photo.append(f"{entry.entry_no} - {entry.attribute.name if entry.attribute else entry.attribute_id} / {entry.sub_area.name if entry.sub_area else entry.sub_area_id}")
+    if missing_photo:
+        raise HTTPException(status_code=400, detail="Photo evidence required for: " + "; ".join(missing_photo))
+
+    if remarks is not None:
+        inspection.remarks = remarks
+    old_status = inspection.status.value
+    inspection.status = InspectionStatus.UNDER_LINE_MANAGER_REVIEW
+    inspection.submitted_at = datetime.utcnow()
+    db.add(InspectionWorkflowHistory(inspection_id=inspection.id, from_status=old_status, to_status=inspection.status.value, action_by=user.id, action="SUBMIT", remarks="Entry-based inspection submitted for Line Manager review"))
+    audit_log(db, actor=user, action="INSPECTION_SUBMITTED", entity_type="Inspection", entity_id=inspection.id, old_value={"status": old_status}, new_value={"status": inspection.status.value, "entry_count": len(entries)})
+    db.commit()
+    db.refresh(inspection)
+    return inspection
+
+
 def submit_inspection(db: Session, inspection: Inspection, payload: InspectionDraftIn, user: User) -> Inspection:
+    """Legacy checklist submit retained for older screens/API clients."""
     inspection = save_draft(db, inspection, payload, user)
     attributes = db.query(InspectionAttribute).filter_by(is_active=True).all()
     scored_attribute_ids = {s.attribute_id for s in inspection.attribute_scores}
     missing = [a.name for a in attributes if a.id not in scored_attribute_ids]
     if missing:
         raise HTTPException(status_code=400, detail=f"Missing grading for attributes: {', '.join(missing)}")
-
-    # Evidence validation: each applicable sub-area must have configured minimum photos.
-    # If a sub-area is not applicable, a reason must be recorded.
-    observations = {o.sub_area_id: o for o in inspection.observations}
-    sub_areas = db.query(InspectionSubArea).filter_by(is_active=True).all()
-    for sub_area in sub_areas:
-        obs = observations.get(sub_area.id)
-        if obs and obs.is_applicable is False:
-            if sub_area.allow_na and obs.na_reason:
-                continue
-            raise HTTPException(status_code=400, detail=f"N/A reason is required for {sub_area.name}")
-        photo_count = db.query(InspectionMedia).filter_by(inspection_id=inspection.id, sub_area_id=sub_area.id, media_type=MediaType.PHOTO, is_deleted=False).count()
-        if photo_count < sub_area.photo_min_required:
-            raise HTTPException(status_code=400, detail=f"At least {sub_area.photo_min_required} photo(s) required for {sub_area.name}")
 
     old_status = inspection.status.value
     inspection.status = InspectionStatus.UNDER_LINE_MANAGER_REVIEW

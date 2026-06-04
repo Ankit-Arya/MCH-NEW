@@ -1,8 +1,8 @@
-
 import axios from 'axios'
 
 export const api = axios.create({
-  baseURL: '/api/v1'
+  baseURL: '/api/v1',
+  headers: { 'Cache-Control': 'no-cache' }
 })
 
 api.interceptors.request.use((config) => {
@@ -31,4 +31,9 @@ export async function downloadBlob(url, params, filename) {
   a.click()
   a.remove()
   window.URL.revokeObjectURL(blobUrl)
+}
+
+
+export function withTimestamp(params = {}) {
+  return { ...params, _ts: Date.now() }
 }

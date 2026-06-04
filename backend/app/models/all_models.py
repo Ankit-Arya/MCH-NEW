@@ -271,7 +271,38 @@ class Inspection(Base, TimestampMixin):
     attribute_scores: Mapped[list["InspectionAttributeScore"]] = relationship(back_populates="inspection", cascade="all, delete-orphan")
     observations: Mapped[list["InspectionSubAreaObservation"]] = relationship(back_populates="inspection", cascade="all, delete-orphan")
     media: Mapped[list["InspectionMedia"]] = relationship(back_populates="inspection", cascade="all, delete-orphan")
+    entries: Mapped[list["InspectionEntry"]] = relationship(back_populates="inspection", cascade="all, delete-orphan")
     reviews: Mapped[list["InspectionReview"]] = relationship(back_populates="inspection", cascade="all, delete-orphan")
+
+
+class InspectionEntry(Base, TimestampMixin):
+    """One selected field observation inside a parent inspection.
+
+    This table supports the new compact inspection UI: the inspector selects only the
+    attribute/sub-area actually inspected, captures evidence, grades that entry, and
+    then may add another entry under the same inspection_id.
+    """
+    __tablename__ = "inspection_entries"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    inspection_id: Mapped[int] = mapped_column(ForeignKey("inspections.id"), nullable=False, index=True)
+    entry_no: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    attribute_id: Mapped[int] = mapped_column(ForeignKey("inspection_attributes.id"), nullable=False)
+    sub_area_id: Mapped[int] = mapped_column(ForeignKey("inspection_sub_areas.id"), nullable=False)
+    grade_code: Mapped[str] = mapped_column(String(5), nullable=False)
+    grade_percentage: Mapped[float] = mapped_column(Float, nullable=False)
+    remarks: Mapped[str | None] = mapped_column(Text)
+    captured_latitude: Mapped[float | None] = mapped_column(Float)
+    captured_longitude: Mapped[float | None] = mapped_column(Float)
+    gps_accuracy: Mapped[float | None] = mapped_column(Float)
+    captured_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    inspection: Mapped[Inspection] = relationship(back_populates="entries")
+    attribute: Mapped[InspectionAttribute] = relationship()
+    sub_area: Mapped[InspectionSubArea] = relationship()
+    creator: Mapped[User] = relationship()
+    media: Mapped[list["InspectionMedia"]] = relationship(back_populates="entry")
 
 
 class InspectionAttributeScore(Base, TimestampMixin):
@@ -308,6 +339,7 @@ class InspectionMedia(Base, TimestampMixin):
     __tablename__ = "inspection_media"
     id: Mapped[int] = mapped_column(primary_key=True)
     inspection_id: Mapped[int] = mapped_column(ForeignKey("inspections.id"), nullable=False)
+    inspection_entry_id: Mapped[int | None] = mapped_column(ForeignKey("inspection_entries.id"), nullable=True, index=True)
     attribute_id: Mapped[int] = mapped_column(ForeignKey("inspection_attributes.id"), nullable=False)
     sub_area_id: Mapped[int] = mapped_column(ForeignKey("inspection_sub_areas.id"), nullable=False)
     media_type: Mapped[MediaType] = mapped_column(Enum(MediaType), nullable=False)
@@ -326,6 +358,7 @@ class InspectionMedia(Base, TimestampMixin):
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
 
     inspection: Mapped[Inspection] = relationship(back_populates="media")
+    entry: Mapped[InspectionEntry | None] = relationship(back_populates="media")
     attribute: Mapped[InspectionAttribute] = relationship()
     sub_area: Mapped[InspectionSubArea] = relationship()
     uploader: Mapped[User] = relationship()

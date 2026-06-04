@@ -1,4 +1,3 @@
-
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.core.database import get_db
@@ -10,6 +9,8 @@ from app.models.all_models import (
     Contractor,
     GradingScheme,
     InspectionAttribute,
+    InspectionSubArea,
+    GradingOption,
     Line,
     RoleCode,
     Station,
@@ -77,3 +78,16 @@ def inspection_attributes(db: Session = Depends(get_db), user: User = Depends(ge
 @router.get("/grading-schemes")
 def grading_schemes(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return db.query(GradingScheme).filter_by(is_active=True).all()
+
+
+@router.get("/inspection-attributes/{attribute_id}/sub-areas")
+def inspection_sub_areas(attribute_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return db.query(InspectionSubArea).filter_by(attribute_id=attribute_id, is_active=True).order_by(InspectionSubArea.sort_order).all()
+
+
+@router.get("/contracts/{contract_id}/grading-options")
+def contract_grading_options(contract_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    contract = db.get(Contract, contract_id)
+    if not contract:
+        return []
+    return db.query(GradingOption).filter_by(scheme_id=contract.grading_scheme_id).order_by(GradingOption.sort_order).all()

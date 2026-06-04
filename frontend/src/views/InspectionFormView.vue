@@ -1,304 +1,204 @@
 <template>
   <AppLayout>
-    <h1>Inspection Form</h1>
+    <section class="hero-panel card entry-hero">
+      <div>
+        <h1>Inspection Entry Capture</h1>
+        <p class="hero-subtitle">Select only the area being inspected. Each saved entry belongs to the same inspection number, with its own attribute, sub-area, grade, evidence and capture metadata.</p>
+      </div>
+      <div v-if="inspection" class="inspection-badges">
+        <span class="badge blue">{{ inspection.inspection_no }}</span>
+        <span class="badge" :class="statusClass">{{ inspection.status }}</span>
+      </div>
+    </section>
 
-    <div class="card debug">
-      Debug Step: {{ debugStep }}
-      <br>
-      Loading: {{ loading }}
-      <br>
-      Error: {{ error || 'No error' }}
-      <br>
-      Attributes: {{ checklist.attributes.length }}
-      <br>
-      Sub Areas: {{ checklist.sub_areas.length }}
-      <br>
-      Grades: {{ checklist.grading_options.length }}
-    </div>
+    <div v-if="loading" class="card section-gap">Loading inspection...</div>
 
-    <div v-if="inspection" class="badge">
-      {{ inspection.inspection_no }} - {{ inspection.status }}
-    </div>
+    <div v-else class="inspection-entry-layout section-gap">
+      <div class="card capture-card">
+        <div class="card-title">
+          <div>
+            <h2>Add Selected Area Entry</h2>
+            <p class="muted">Photo evidence is mandatory. Video is optional.</p>
+          </div>
+        </div>
 
-    <div v-if="loading" class="card">
-      Loading checklist...
-    </div>
-
-    <div v-else-if="error" class="card error">
-      {{ error }}
-    </div>
-
-    <div v-else class="grid">
-      <div v-if="checklist.attributes.length === 0" class="card error">
-        No inspection attributes found.
+        <EntryCaptureForm
+          ref="entryFormRef"
+          :attributes="checklist.attributes"
+          :grades="checklist.grades"
+          :sub-areas="subAreas"
+          :loading-sub-areas="loadingSubAreas"
+          :saving="saving"
+          :error="error"
+          @attribute-change="loadSubAreas"
+          @save="saveEntry"
+          @clear="clearMedia"
+        >
+          <template #media>
+            <MediaCapturePanel ref="mediaPanelRef" @change="media = $event" />
+          </template>
+          <template #metadata>
+            <EntryMetadataPreview :metadata="metadata" :error="gpsError" @capture-gps="captureGps" />
+          </template>
+        </EntryCaptureForm>
       </div>
 
-      <AttributeCard
-        v-for="attr in checklist.attributes"
-        :key="attr.id"
-        :attribute="attr"
-        :grades="checklist.grading_options"
-        :model="models[attr.id]"
-        @media-selected="uploadMedia"
-      />
+      <SavedEntriesList :entries="entries" :can-edit="canEdit" @delete="deleteEntry" />
+    </div>
 
-      <div class="card actions">
-        <button class="btn btn-muted" @click="saveDraft" :disabled="saving">
-          {{ saving ? 'Saving...' : 'Save Draft' }}
-        </button>
-
-        <button class="btn btn-primary" @click="submitInspection" :disabled="submitting">
+    <div v-if="!loading" class="card submit-panel section-gap">
+      <div>
+        <h2>Submit Inspection</h2>
+        <p class="muted">You can submit with partial selected entries. Skipped areas are treated as Not Inspected, not failed.</p>
+      </div>
+      <div class="submit-actions">
+        <button class="btn btn-muted" @click="loadEntries">Refresh Entries</button>
+        <button class="btn btn-primary" @click="submitInspection" :disabled="submitting || !entries.length || !canEdit">
           {{ submitting ? 'Submitting...' : 'Submit Inspection' }}
         </button>
-
-        <p v-if="message" class="success">
-          {{ message }}
-        </p>
       </div>
-
-      <details class="card">
-        <summary>Raw Checklist JSON</summary>
-        <pre>{{ rawChecklist }}</pre>
-      </details>
+      <p v-if="message" class="success-text">{{ message }}</p>
     </div>
   </AppLayout>
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import AppLayout from '../components/AppLayout.vue'
-import AttributeCard from '../components/AttributeCard.vue'
+import EntryCaptureForm from '../components/EntryCaptureForm.vue'
+import EntryMetadataPreview from '../components/EntryMetadataPreview.vue'
+import MediaCapturePanel from '../components/MediaCapturePanel.vue'
+import SavedEntriesList from '../components/SavedEntriesList.vue'
 import { api } from '../services/api'
 
 const route = useRoute()
-
 const loading = ref(true)
+const loadingSubAreas = ref(false)
 const saving = ref(false)
 const submitting = ref(false)
-
-const message = ref('')
-const error = ref('')
-const debugStep = ref('Component loaded')
-
 const inspection = ref(null)
-const rawChecklist = ref(null)
+const checklist = ref({ attributes: [], grades: [] })
+const subAreas = ref([])
+const entries = ref([])
+const media = ref({ photo: null, video: null })
+const error = ref('')
+const message = ref('')
+const gpsError = ref('')
+const entryFormRef = ref(null)
+const mediaPanelRef = ref(null)
+const metadata = reactive({ latitude:null, longitude:null, gps_accuracy:null, captured_at:null })
+const canEdit = computed(() => ['DRAFT', 'RETURNED_FOR_CLARIFICATION'].includes(inspection.value?.status))
+const statusClass = computed(() => inspection.value?.status === 'DRAFT' ? 'amber' : 'green')
 
-const checklist = ref({
-  contract: null,
-  station: null,
-  grading_options: [],
-  attributes: [],
-  sub_areas: []
-})
-
-const models = ref({})
-
-function normalizeChecklist(data) {
-  debugStep.value = 'Normalizing checklist'
-
-  const subAreas = Array.isArray(data?.sub_areas) ? data.sub_areas : []
-  const attributes = Array.isArray(data?.attributes) ? data.attributes : []
-  const gradingOptions = Array.isArray(data?.grading_options) ? data.grading_options : []
-
-  checklist.value = {
-    contract: data?.contract || null,
-    station: data?.station || null,
-    grading_options: gradingOptions,
-    sub_areas: subAreas,
-    attributes: attributes.map(attr => ({
-      ...attr,
-      sub_areas: Array.isArray(attr.sub_areas) ? attr.sub_areas : subAreas
-    }))
-  }
+function nowIso(){ return new Date().toISOString() }
+function captureGps(){
+  gpsError.value = ''
+  metadata.captured_at = nowIso()
+  if (!navigator.geolocation) { gpsError.value = 'Geolocation is not supported by this browser'; return }
+  navigator.geolocation.getCurrentPosition(pos => {
+    metadata.latitude = pos.coords.latitude
+    metadata.longitude = pos.coords.longitude
+    metadata.gps_accuracy = pos.coords.accuracy
+    metadata.captured_at = nowIso()
+  }, () => { gpsError.value = 'GPS permission denied or unavailable'; metadata.captured_at = nowIso() }, { enableHighAccuracy: true, timeout: 10000 })
 }
 
-function initModels() {
-  debugStep.value = 'Initializing models'
-
-  const nextModels = {}
-
-  for (const attr of checklist.value.attributes) {
-    nextModels[attr.id] = {
-      score: {
-        attribute_id: attr.id,
-        grade_code: '',
-        remarks: ''
-      },
-      observations: {}
-    }
-
-    const subAreas = Array.isArray(attr.sub_areas) ? attr.sub_areas : []
-
-    for (const s of subAreas) {
-      nextModels[attr.id].observations[s.id] = {
-        attribute_id: attr.id,
-        sub_area_id: s.id,
-        is_applicable: true,
-        na_reason: '',
-        observation_text: ''
-      }
-    }
-  }
-
-  models.value = nextModels
+async function loadSubAreas(attributeId){
+  subAreas.value = []
+  if (!attributeId) return
+  loadingSubAreas.value = true
+  try { subAreas.value = (await api.get(`/master/inspection-attributes/${attributeId}/sub-areas`)).data }
+  finally { loadingSubAreas.value = false }
 }
 
-function buildPayload() {
-  const attribute_scores = []
-  const observations = []
-
-  Object.values(models.value).forEach(model => {
-    attribute_scores.push(model.score)
-    observations.push(...Object.values(model.observations))
-  })
-
-  return {
-    attribute_scores,
-    observations
-  }
+async function loadEntries(){
+  entries.value = (await api.get(`/inspections/${route.params.id}/entries`)).data
 }
 
-async function saveDraft() {
+async function uploadFile(entryId, file, mediaType){
+  const fd = new FormData()
+  fd.append('media_type', mediaType)
+  fd.append('captured_latitude', metadata.latitude ?? '')
+  fd.append('captured_longitude', metadata.longitude ?? '')
+  fd.append('gps_accuracy', metadata.gps_accuracy ?? '')
+  fd.append('captured_at', metadata.captured_at || nowIso())
+  fd.append('file', file)
+  await api.post(`/inspections/${route.params.id}/entries/${entryId}/media`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+}
+
+async function saveEntry(form){
+  error.value = ''; message.value = ''
+  if (!canEdit.value) { error.value = 'This inspection is already submitted/locked'; return }
+  if (!media.value.photo) { error.value = 'Photo evidence is mandatory for every entry'; return }
+  if (!metadata.captured_at) captureGps()
   saving.value = true
-  message.value = ''
-  error.value = ''
-
   try {
-    await api.put(`/inspections/${route.params.id}/draft`, buildPayload())
-    message.value = 'Draft saved'
-  } catch (err) {
-    console.error('Draft save failed:', err)
-    error.value = err.response?.data?.detail || err.message || 'Draft save failed'
+    const payload = {
+      attribute_id: form.attribute_id,
+      sub_area_id: form.sub_area_id,
+      grade_code: form.grade_code,
+      remarks: form.remarks,
+      captured_latitude: metadata.latitude,
+      captured_longitude: metadata.longitude,
+      gps_accuracy: metadata.gps_accuracy,
+      captured_at: metadata.captured_at || nowIso(),
+    }
+    const { data: entry } = await api.post(`/inspections/${route.params.id}/entries`, payload)
+    await uploadFile(entry.id, media.value.photo, 'PHOTO')
+    if (media.value.video) await uploadFile(entry.id, media.value.video, 'VIDEO')
+    await loadEntries()
+    clearMedia()
+    entryFormRef.value?.resetForm()
+    message.value = `${entry.entry_no} saved with evidence.`
+  } catch (e) {
+    error.value = e.response?.data?.detail || 'Unable to save entry'
   } finally {
     saving.value = false
   }
 }
 
-async function submitInspection() {
+function clearMedia(){
+  media.value = { photo:null, video:null }
+  mediaPanelRef.value?.reset()
+}
+
+async function deleteEntry(entry){
+  if (!confirm(`Delete ${entry.entry_no}?`)) return
+  await api.delete(`/inspections/${route.params.id}/entries/${entry.id}`)
+  await loadEntries()
+}
+
+async function submitInspection(){
+  error.value = ''; message.value = ''
   submitting.value = true
-  message.value = ''
-  error.value = ''
-
   try {
-    const response = await api.post(
-      `/inspections/${route.params.id}/submit`,
-      buildPayload()
-    )
-
-    inspection.value = response.data
-    message.value = 'Inspection submitted'
-  } catch (err) {
-    console.error('Inspection submit failed:', err)
-    error.value = err.response?.data?.detail || err.message || 'Inspection submit failed'
-  } finally {
-    submitting.value = false
-  }
+    const { data } = await api.post(`/inspections/${route.params.id}/submit`, { remarks: inspection.value?.remarks || null })
+    inspection.value = data
+    message.value = 'Inspection submitted for review.'
+  } catch(e) { error.value = e.response?.data?.detail || 'Unable to submit inspection' }
+  finally { submitting.value = false }
 }
 
-async function uploadMedia({ attribute, subArea, files }) {
-  message.value = ''
-  error.value = ''
-
-  try {
-    for (const file of files) {
-      const fd = new FormData()
-
-      fd.append('attribute_id', attribute.id)
-      fd.append('sub_area_id', subArea.id)
-      fd.append('media_type', file.type.startsWith('video') ? 'VIDEO' : 'PHOTO')
-      fd.append('file', file)
-
-      await api.post(`/inspections/${route.params.id}/media`, fd, {
-        headers: {
-          'Content-Type': 'multipart/form-data'
-        }
-      })
-    }
-
-    message.value = 'Media uploaded'
-  } catch (err) {
-    console.error('Media upload failed:', err)
-    error.value = err.response?.data?.detail || err.message || 'Media upload failed'
-  }
-}
-
-onMounted(async () => {
-  loading.value = true
-  error.value = ''
-  message.value = ''
-
-  try {
-    debugStep.value = 'Loading inspection'
-
-    const inspectionResponse = await api.get(`/inspections/${route.params.id}`)
-    inspection.value = inspectionResponse.data
-
-    debugStep.value = 'Inspection loaded'
-
-    const contractId = route.query.contract_id || inspection.value.contract_id
-    const stationId = route.query.station_id || inspection.value.station_id
-
-    if (!contractId || !stationId) {
-      throw new Error('contract_id or station_id missing')
-    }
-
-    debugStep.value = `Loading checklist for contract ${contractId}, station ${stationId}`
-
-    const checklistResponse = await api.get('/inspections/checklist', {
-      params: {
-        contract_id: contractId,
-        station_id: stationId
-      }
-    })
-
-    debugStep.value = 'Checklist API response received'
-    rawChecklist.value = checklistResponse.data
-
-    normalizeChecklist(checklistResponse.data)
-    initModels()
-
-    debugStep.value = 'Ready'
-  } catch (err) {
-    console.error('Checklist loading failed:', err)
-    error.value = err.response?.data?.detail || err.message || 'Checklist loading failed'
-    debugStep.value = 'Failed'
-  } finally {
-    loading.value = false
-  }
+onMounted(async()=>{
+  inspection.value = (await api.get(`/inspections/${route.params.id}`)).data
+  const contractId = route.query.contract_id || inspection.value.contract_id
+  const stationId = route.query.station_id || inspection.value.station_id
+  const check = (await api.get(`/inspections/checklist?contract_id=${contractId}&station_id=${stationId}`)).data
+  checklist.value = { attributes: check.attributes || [], grades: check.grades || check.grading_options || [] }
+  await loadEntries()
+  captureGps()
+  loading.value = false
 })
 </script>
 
 <style scoped>
-.grid {
-  display: grid;
-  gap: 16px;
-}
-
-.actions {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.error {
-  color: #b91c1c;
-}
-
-.success {
-  color: #15803d;
-}
-
-.debug {
-  background: #f8fafc;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-pre {
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 12px;
-}
+.entry-hero { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }
+.inspection-badges { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+.inspection-entry-layout { display:grid; grid-template-columns:minmax(360px, 0.85fr) minmax(420px, 1.15fr); gap:18px; align-items:start; }
+.capture-card { position:sticky; top:18px; }
+.submit-panel { display:flex; justify-content:space-between; gap:14px; align-items:center; }
+.submit-actions { display:flex; gap:10px; flex-wrap:wrap; }
+.success-text { color:#166534; font-weight:900; margin:0; }
+@media(max-width:1080px){ .inspection-entry-layout{grid-template-columns:1fr;} .capture-card{position:relative; top:auto;} .entry-hero,.submit-panel{display:grid;} }
 </style>
