@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     MINIO_SECRET_KEY: str = "mch_minio_password"
     MINIO_SECURE: bool = False
     MINIO_BUCKET: str = "mch-inspections"
+    MINIO_PUBLIC_BASE_URL: str | None = None
 
     MAX_PHOTO_MB: int = 8
     MAX_VIDEO_MB: int = 50
