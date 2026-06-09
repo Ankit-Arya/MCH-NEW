@@ -1,4 +1,3 @@
-
 <template>
   <AppLayout>
     <section class="card hero-panel">
@@ -30,24 +29,40 @@
       </div>
       <div class="card">
         <div class="card-title"><h2>Penalty Register</h2><span class="badge red">KPI-6</span></div>
-        <div class="table-wrap">
+        <div class="table-wrap mobile-cards">
           <table class="table">
             <thead><tr><th>Contract</th><th>Score</th><th>Bill</th><th>Penalty</th><th>Status</th></tr></thead>
-            <tbody><tr v-for="p in penalties" :key="p.id"><td>{{p.contract_id}}</td><td>{{p.kpi_score}}%</td><td>{{currency(p.monthly_bill_value)}}</td><td>{{currency(p.penalty_amount)}}</td><td><span class="badge amber">{{p.status}}</span></td></tr></tbody>
+            <tbody>
+              <tr v-for="p in penalties" :key="p.id">
+                <td data-label="Contract">{{p.contract_id}}</td>
+                <td data-label="Score">{{p.kpi_score}}%</td>
+                <td data-label="Bill">{{currency(p.monthly_bill_value)}}</td>
+                <td data-label="Penalty">{{currency(p.penalty_amount)}}</td>
+                <td data-label="Status"><span class="badge amber">{{p.status}}</span></td>
+              </tr>
+              <tr v-if="!penalties.length"><td data-label="Penalty" colspan="5" class="muted">No penalty records found.</td></tr>
+            </tbody>
           </table>
         </div>
       </div>
     </div>
   </AppLayout>
 </template>
+
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import AppLayout from '../components/AppLayout.vue'
 import StatCard from '../components/StatCard.vue'
 import SimpleBarChart from '../components/SimpleBarChart.vue'
 import { api } from '../services/api'
-const billing_cycle_id = ref(1); const contract_id = ref(1); const result = ref(null); const scores = ref([]); const penalties = ref([])
-const scoreChart = computed(() => scores.value.map((r, idx) => ({ label: `Contract ${r.contract_id} / Cycle ${r.billing_cycle_id}`, value: r.average_score || 0 })).slice(0, 8))
+
+const billing_cycle_id = ref(1)
+const contract_id = ref(1)
+const result = ref(null)
+const scores = ref([])
+const penalties = ref([])
+const scoreChart = computed(() => scores.value.map((r) => ({ label: `Contract ${r.contract_id} / Cycle ${r.billing_cycle_id}`, value: r.average_score || 0 })).slice(0, 8))
+
 function currency(v){ return new Intl.NumberFormat('en-IN', { style:'currency', currency:'INR', maximumFractionDigits:0 }).format(v || 0) }
 async function load(){ scores.value=(await api.get('/kpi/contract-scores')).data; penalties.value=(await api.get('/kpi/penalties')).data }
 async function calculate(){ result.value=(await api.post('/kpi/calculate/monthly',{billing_cycle_id:Number(billing_cycle_id.value),contract_id:Number(contract_id.value)})).data; await load() }
