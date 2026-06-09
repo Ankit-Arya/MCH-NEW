@@ -55,11 +55,12 @@ services:
         condition: service_started
       minio:
         condition: service_started
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --reload
     expose:
       - "8000"
     volumes:
       - ./backend:/app
+      - ./frontend/src/assets:/app/frontend_assets:ro
     restart: unless-stopped
 
   worker:
@@ -74,6 +75,7 @@ services:
     command: celery -A app.workers.celery_app.celery_app worker --loglevel=INFO
     volumes:
       - ./backend:/app
+      - ./frontend/src/assets:/app/frontend_assets:ro
     restart: unless-stopped
 
   scheduler:
@@ -87,12 +89,16 @@ services:
     command: celery -A app.workers.celery_app.celery_app beat --loglevel=INFO
     volumes:
       - ./backend:/app
+      - ./frontend/src/assets:/app/frontend_assets:ro
     restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
+      dockerfile: Dockerfile
     container_name: mch_frontend
+    volumes:
+    - ./frontend:/app
     expose:
       - "80"
     restart: unless-stopped
