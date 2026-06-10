@@ -9,6 +9,7 @@ import ReviewQueueView from '../views/ReviewQueueView.vue'
 import KpiDashboardView from '../views/KpiDashboardView.vue'
 import MasterDataView from '../views/MasterDataView.vue'
 import ReportsView from '../views/ReportsView.vue'
+import AccessControlView from '../views/AccessControlView.vue'
 
 const routes = [
   { path: '/login', component: LoginView },
@@ -18,7 +19,8 @@ const routes = [
   { path: '/reports', component: ReportsView, meta: { requiresAuth: true } },
   { path: '/reviews', component: ReviewQueueView, meta: { requiresAuth: true } },
   { path: '/kpi', component: KpiDashboardView, meta: { requiresAuth: true } },
-  { path: '/master', component: MasterDataView, meta: { requiresAuth: true } }
+  { path: '/master', component: MasterDataView, meta: { requiresAuth: true } },
+  { path: '/access-control', component: AccessControlView, meta: { requiresAuth: true } }
 ]
 
 const router = createRouter({ history: createWebHistory(), routes })

@@ -3,7 +3,7 @@
     <section class="card hero-panel">
       <h1>Review Queue</h1>
       <p class="hero-subtitle">
-        Pending inspections are loaded page by page so the queue remains fast even when inspections grow over time.
+        Pending inspections are loaded page by page. Use View PDF to analyse the entry-wise inspection report before recommending or approving.
       </p>
     </section>
 
@@ -38,7 +38,10 @@
               <th>Inspector</th>
               <th>Type</th>
               <th>Status</th>
-              <th>Action</th>
+              <th>Score</th>
+              <th>Entries</th>
+              <th>PDF</th>
+              <th>Review</th>
             </tr>
           </thead>
           <tbody>
@@ -50,9 +53,17 @@
               <td>{{ i.submitted_by_name || '-' }}</td>
               <td><span class="badge">{{ shortType(i.inspection_type) }}</span></td>
               <td><span class="badge" :class="statusClass(i.status)">{{ i.status }}</span></td>
+              <td><strong>{{ displayPercent(i.score) }}</strong></td>
+              <td>{{ i.entry_count ?? '-' }} / {{ i.media_count ?? '-' }}</td>
+              <td>
+                <div class="pdf-actions">
+                  <button class="btn btn-sm btn-outline" @click="viewPdf(i)" :disabled="pdfLoading">View</button>
+                  <button class="btn btn-sm btn-secondary" @click="downloadPdf(i)">Download</button>
+                </div>
+              </td>
               <td><button class="btn btn-primary" @click="recommend(i)" :disabled="actingId === i.id">{{ actionLabel(i) }}</button></td>
             </tr>
-            <tr v-if="!rows.length"><td colspan="8" class="muted">No pending reviews.</td></tr>
+            <tr v-if="!rows.length"><td colspan="11" class="muted">No pending reviews.</td></tr>
           </tbody>
         </table>
       </div>
@@ -69,10 +80,16 @@
             <span>Contract</span><b>{{ i.contract_code || '-' }}</b>
             <span>Inspector</span><b>{{ i.submitted_by_name || '-' }}</b>
             <span>Type</span><b>{{ shortType(i.inspection_type) }}</b>
+            <span>Score</span><b>{{ displayPercent(i.score) }}</b>
+            <span>Entries / Media</span><b>{{ i.entry_count ?? '-' }} / {{ i.media_count ?? '-' }}</b>
           </div>
-          <button class="btn btn-primary full-width" @click="recommend(i)" :disabled="actingId === i.id">
-            {{ actionLabel(i) }}
-          </button>
+          <div class="mobile-action-row">
+            <button class="btn btn-outline" @click="viewPdf(i)" :disabled="pdfLoading">View PDF</button>
+            <button class="btn btn-secondary" @click="downloadPdf(i)">Download PDF</button>
+            <button class="btn btn-primary review-button" @click="recommend(i)" :disabled="actingId === i.id">
+              {{ actionLabel(i) }}
+            </button>
+          </div>
         </article>
       </div>
 
@@ -84,17 +101,35 @@
         <button class="btn btn-outline" @click="goLast" :disabled="!pagination.has_next || loading">Last</button>
       </div>
     </section>
+
+    <PdfPreviewModal
+      :open="pdfPreview.open"
+      :src="pdfPreview.url"
+      :title="pdfPreview.title"
+      :download-name="pdfPreview.downloadName"
+      :loading="pdfLoading"
+      @close="closePdfPreview"
+    />
   </AppLayout>
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import AppLayout from '../components/AppLayout.vue'
-import { api } from '../services/api'
+import PdfPreviewModal from '../components/PdfPreviewModal.vue'
+import { api, downloadBlob, getPdfBlobUrl } from '../services/api'
 
 const rows = ref([])
 const loading = ref(false)
 const actingId = ref(null)
+const pdfLoading = ref(false)
+
+const pdfPreview = reactive({
+  open: false,
+  url: '',
+  title: '',
+  downloadName: 'inspection.pdf'
+})
 
 const pagination = reactive({
   page: 1,
@@ -133,6 +168,11 @@ function formatDate(value) {
   return new Date(value).toLocaleDateString('en-IN')
 }
 
+function displayPercent(value) {
+  if (value === null || value === undefined || value === '') return '-'
+  return `${Number(value).toFixed(2).replace(/\.00$/, '')}%`
+}
+
 function actionLabel(item) {
   if (item.status === 'LINE_MANAGER_RECOMMENDED') return 'Approve as DGM'
   if (item.status === 'GM_REVIEW_REQUIRED') return 'Review as GM'
@@ -158,6 +198,35 @@ async function goFirst() { pagination.page = 1; await loadPage() }
 async function goPrev() { if (pagination.has_prev) { pagination.page -= 1; await loadPage() } }
 async function goNext() { if (pagination.has_next) { pagination.page += 1; await loadPage() } }
 async function goLast() { pagination.page = pagination.pages; await loadPage() }
+
+function cleanupPdfUrl() {
+  if (pdfPreview.url) {
+    window.URL.revokeObjectURL(pdfPreview.url)
+    pdfPreview.url = ''
+  }
+}
+
+function closePdfPreview() {
+  pdfPreview.open = false
+  cleanupPdfUrl()
+}
+
+async function viewPdf(item) {
+  pdfLoading.value = true
+  pdfPreview.open = true
+  pdfPreview.title = `Inspection ${item.inspection_no}`
+  pdfPreview.downloadName = `${item.inspection_no}.pdf`
+  cleanupPdfUrl()
+  try {
+    pdfPreview.url = await getPdfBlobUrl(`/reports/inspection/${item.id}/pdf`, {})
+  } finally {
+    pdfLoading.value = false
+  }
+}
+
+async function downloadPdf(item) {
+  await downloadBlob(`/reports/inspection/${item.id}/pdf`, {}, `${item.inspection_no}.pdf`)
+}
 
 async function recommend(i) {
   actingId.value = i.id
@@ -191,6 +260,7 @@ async function recommend(i) {
 }
 
 onMounted(loadPage)
+onBeforeUnmount(cleanupPdfUrl)
 </script>
 
 <style scoped>
@@ -215,6 +285,12 @@ onMounted(loadPage)
   min-width: 92px;
 }
 
+.pdf-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .pagination-bar {
   display: flex;
   align-items: center;
@@ -234,9 +310,15 @@ onMounted(loadPage)
   display: none;
 }
 
-.full-width {
-  width: 100%;
+.mobile-action-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
   margin-top: 14px;
+}
+
+.review-button {
+  grid-column: 1 / -1;
 }
 
 @media (max-width: 760px) {
@@ -267,7 +349,7 @@ onMounted(loadPage)
 
   .mobile-record-grid {
     display: grid;
-    grid-template-columns: 96px 1fr;
+    grid-template-columns: 104px 1fr;
     gap: 8px 12px;
     font-size: 0.92rem;
   }
@@ -304,6 +386,10 @@ onMounted(loadPage)
 
   .compact-input {
     width: 120px;
+  }
+
+  .mobile-action-row {
+    grid-template-columns: 1fr;
   }
 }
 </style>

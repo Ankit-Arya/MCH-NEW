@@ -1,8 +1,7 @@
 import axios from 'axios'
 
 export const api = axios.create({
-  baseURL: '/api/v1',
-  headers: { 'Cache-Control': 'no-cache' }
+  baseURL: '/api/v1'
 })
 
 api.interceptors.request.use((config) => {
@@ -21,9 +20,14 @@ export function clearTokens() {
   localStorage.removeItem('refresh_token')
 }
 
-export async function downloadBlob(url, params, filename) {
+export async function getPdfBlobUrl(url, params = {}) {
   const { data } = await api.get(url, { params, responseType: 'blob' })
-  const blobUrl = window.URL.createObjectURL(new Blob([data], { type: 'application/pdf' }))
+  const blob = new Blob([data], { type: 'application/pdf' })
+  return window.URL.createObjectURL(blob)
+}
+
+export async function downloadBlob(url, params, filename) {
+  const blobUrl = await getPdfBlobUrl(url, params || {})
   const a = document.createElement('a')
   a.href = blobUrl
   a.download = filename
@@ -31,9 +35,4 @@ export async function downloadBlob(url, params, filename) {
   a.click()
   a.remove()
   window.URL.revokeObjectURL(blobUrl)
-}
-
-
-export function withTimestamp(params = {}) {
-  return { ...params, _ts: Date.now() }
 }

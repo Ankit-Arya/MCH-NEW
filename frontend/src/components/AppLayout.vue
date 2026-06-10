@@ -54,6 +54,7 @@
         <RouterLink to="/reviews" @click="closeMobileMenu">Review Queue</RouterLink>
         <RouterLink to="/kpi" @click="closeMobileMenu">KPI & Penalty</RouterLink>
         <RouterLink to="/master" @click="closeMobileMenu">Master Data</RouterLink>
+        <RouterLink to="/access-control" @click="closeMobileMenu">Access Control</RouterLink>
       </nav>
 
       <div class="sidebar-note">

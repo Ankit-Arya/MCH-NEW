@@ -4,7 +4,7 @@
       <h1>Inspection Reports & PDF Register</h1>
       <p class="hero-subtitle">
         Search inspections by date range, Station Manager/EIT, station, contract, inspection type and status.
-        The screen is paginated for fast loading; PDF register download still uses the full filtered range.
+        Use View PDF for quick analysis and Download PDF for record keeping.
       </p>
 
       <div class="filter-grid section-gap">
@@ -44,6 +44,7 @@
 
       <div class="toolbar section-gap">
         <button class="btn btn-primary" @click="search" :disabled="loading">{{ loading ? 'Searching...' : 'Search' }}</button>
+        <button class="btn btn-secondary" @click="viewRegister" :disabled="pdfLoading">View Filtered PDF</button>
         <button class="btn btn-secondary" @click="downloadRegister">Download Filtered PDF</button>
         <button class="btn btn-outline" @click="reset">Reset</button>
       </div>
@@ -94,7 +95,12 @@
               <td><span class="badge">{{ shortType(r.inspection_type) }}</span></td>
               <td><span class="badge" :class="statusClass(r.status)">{{ r.status }}</span></td>
               <td><strong>{{ r.score }}%</strong></td>
-              <td><button class="btn btn-sm btn-primary" @click="downloadSingle(r.id, r.inspection_no)">PDF</button></td>
+              <td>
+                <div class="pdf-actions">
+                  <button class="btn btn-sm btn-outline" @click="viewSingle(r)" :disabled="pdfLoading">View</button>
+                  <button class="btn btn-sm btn-primary" @click="downloadSingle(r.id, r.inspection_no)">Download</button>
+                </div>
+              </td>
             </tr>
             <tr v-if="!rows.length"><td colspan="9" class="muted">No inspections found.</td></tr>
           </tbody>
@@ -115,7 +121,10 @@
             <span>Type</span><b>{{ shortType(r.inspection_type) }}</b>
             <span>Score</span><b>{{ r.score }}%</b>
           </div>
-          <button class="btn btn-primary full-width" @click="downloadSingle(r.id, r.inspection_no)">Download PDF</button>
+          <div class="mobile-action-row">
+            <button class="btn btn-outline" @click="viewSingle(r)" :disabled="pdfLoading">View PDF</button>
+            <button class="btn btn-primary" @click="downloadSingle(r.id, r.inspection_no)">Download</button>
+          </div>
         </article>
       </div>
 
@@ -127,17 +136,35 @@
         <button class="btn btn-outline" @click="goLast" :disabled="!pagination.has_next || loading">Last</button>
       </div>
     </section>
+
+    <PdfPreviewModal
+      :open="pdfPreview.open"
+      :src="pdfPreview.url"
+      :title="pdfPreview.title"
+      :download-name="pdfPreview.downloadName"
+      :loading="pdfLoading"
+      @close="closePdfPreview"
+    />
   </AppLayout>
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import AppLayout from '../components/AppLayout.vue'
-import { api, downloadBlob } from '../services/api'
+import PdfPreviewModal from '../components/PdfPreviewModal.vue'
+import { api, downloadBlob, getPdfBlobUrl } from '../services/api'
 
 const rows = ref([])
 const loading = ref(false)
+const pdfLoading = ref(false)
 const master = ref({ contracts: [], stations: [], users: [] })
+
+const pdfPreview = reactive({
+  open: false,
+  url: '',
+  title: '',
+  downloadName: 'inspection.pdf'
+})
 
 const defaultFilters = () => ({
   from_date: '2026-01-01',
@@ -228,8 +255,41 @@ async function goPrev() { if (pagination.has_prev) { pagination.page -= 1; await
 async function goNext() { if (pagination.has_next) { pagination.page += 1; await loadPage() } }
 async function goLast() { pagination.page = pagination.pages; await loadPage() }
 
+function cleanupPdfUrl() {
+  if (pdfPreview.url) {
+    window.URL.revokeObjectURL(pdfPreview.url)
+    pdfPreview.url = ''
+  }
+}
+
+function closePdfPreview() {
+  pdfPreview.open = false
+  cleanupPdfUrl()
+}
+
+async function openPdf(url, paramsObj, title, filename) {
+  pdfLoading.value = true
+  pdfPreview.open = true
+  pdfPreview.title = title
+  pdfPreview.downloadName = filename
+  cleanupPdfUrl()
+  try {
+    pdfPreview.url = await getPdfBlobUrl(url, paramsObj || {})
+  } finally {
+    pdfLoading.value = false
+  }
+}
+
+async function viewSingle(row) {
+  await openPdf(`/reports/inspection/${row.id}/pdf`, {}, `Inspection ${row.inspection_no}`, `${row.inspection_no}.pdf`)
+}
+
 async function downloadSingle(id, no) {
   await downloadBlob(`/reports/inspection/${id}/pdf`, {}, `${no}.pdf`)
+}
+
+async function viewRegister() {
+  await openPdf('/reports/inspections/pdf', params(false), 'Filtered Inspection Register', 'inspection-register.pdf')
 }
 
 async function downloadRegister() {
@@ -246,6 +306,8 @@ onMounted(async () => {
   await loadMaster()
   await loadPage()
 })
+
+onBeforeUnmount(cleanupPdfUrl)
 </script>
 
 <style scoped>
@@ -285,12 +347,20 @@ onMounted(async () => {
   padding: 0 8px;
 }
 
+.pdf-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .mobile-list {
   display: none;
 }
 
-.full-width {
-  width: 100%;
+.mobile-action-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
   margin-top: 14px;
 }
 
@@ -359,6 +429,10 @@ onMounted(async () => {
 
   .compact-input {
     width: 120px;
+  }
+
+  .mobile-action-row {
+    grid-template-columns: 1fr;
   }
 }
 </style>

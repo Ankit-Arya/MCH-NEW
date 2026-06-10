@@ -5,22 +5,53 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.deps import get_current_user
-from app.models.all_models import Inspection, InspectionStatus, User
+from app.core.permissions import apply_review_scope
+from app.models.all_models import (
+    Inspection,
+    InspectionAttributeScore,
+    InspectionEntry,
+    InspectionMedia,
+    InspectionStatus,
+    User,
+)
 from app.schemas.review import ReviewIn, ReviewOut
 from app.services.review_service import review_by_line_manager, review_by_dgm, review_by_gm
 
 router = APIRouter()
 
 
-def _pending_query(db: Session):
-    return db.query(Inspection).filter(Inspection.status.in_([
-        InspectionStatus.UNDER_LINE_MANAGER_REVIEW,
-        InspectionStatus.LINE_MANAGER_RECOMMENDED,
-        InspectionStatus.GM_REVIEW_REQUIRED,
-    ])).order_by(Inspection.created_at.desc(), Inspection.id.desc())
+def _pending_query(db: Session, user: User):
+    query = db.query(Inspection).order_by(Inspection.created_at.desc(), Inspection.id.desc())
+    return apply_review_scope(query, db, user)
 
 
-def _review_row(i: Inspection) -> dict:
+def _inspection_score(db: Session, inspection_id: int) -> float:
+    entries = db.query(InspectionEntry).filter(
+        InspectionEntry.inspection_id == inspection_id,
+        InspectionEntry.is_deleted.is_(False),
+    ).all()
+    if entries:
+        return round(sum(e.grade_percentage or 0 for e in entries) / len(entries), 2)
+
+    scores = db.query(InspectionAttributeScore).filter(
+        InspectionAttributeScore.inspection_id == inspection_id,
+    ).all()
+    if scores:
+        return round(sum(s.grade_percentage or 0 for s in scores) / len(scores), 2)
+
+    return 0.0
+
+
+def _review_row(db: Session, i: Inspection) -> dict:
+    entry_count = db.query(InspectionEntry).filter(
+        InspectionEntry.inspection_id == i.id,
+        InspectionEntry.is_deleted.is_(False),
+    ).count()
+    media_count = db.query(InspectionMedia).filter(
+        InspectionMedia.inspection_id == i.id,
+        InspectionMedia.is_deleted.is_(False),
+    ).count()
+
     return {
         "id": i.id,
         "inspection_no": i.inspection_no,
@@ -33,6 +64,9 @@ def _review_row(i: Inspection) -> dict:
         "submitted_by_name": i.submitter.name if i.submitter else None,
         "inspection_type": i.inspection_type.value if i.inspection_type else None,
         "status": i.status.value if i.status else None,
+        "score": _inspection_score(db, i.id),
+        "entry_count": entry_count,
+        "media_count": media_count,
         "created_at": i.created_at.isoformat() if getattr(i, "created_at", None) else None,
         "submitted_at": i.submitted_at.isoformat() if i.submitted_at else None,
     }
@@ -45,13 +79,13 @@ def pending_reviews(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    query = _pending_query(db)
+    query = _pending_query(db, user)
     total = query.count()
     pages = max(1, ceil(total / size)) if total else 1
     page = min(max(page, 1), pages)
     items = query.offset((page - 1) * size).limit(size).all()
     return {
-        "items": [_review_row(i) for i in items],
+        "items": [_review_row(db, i) for i in items],
         "total": total,
         "page": page,
         "size": size,

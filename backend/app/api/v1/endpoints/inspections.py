@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_current_user
-from app.core.permissions import require_station_access
+from app.core.permissions import apply_inspection_scope, require_inspection_access, require_station_access
 from app.models.all_models import (
     Contract,
     GradingOption,
@@ -98,7 +98,11 @@ def list_inspections(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    query = db.query(Inspection).order_by(Inspection.inspection_date.desc(), Inspection.id.desc())
+    query = apply_inspection_scope(
+        db.query(Inspection).order_by(Inspection.inspection_date.desc(), Inspection.id.desc()),
+        db,
+        user,
+    )
     if from_date:
         query = query.filter(Inspection.inspection_date >= from_date)
     if to_date:
@@ -145,7 +149,7 @@ def get_inspection(inspection_id: int, db: Session = Depends(get_db), user: User
     inspection = db.get(Inspection, inspection_id)
     if not inspection:
         raise HTTPException(status_code=404, detail="Inspection not found")
-    require_station_access(db, user, inspection.station_id)
+    require_inspection_access(db, user, inspection)
     return inspection
 
 
@@ -171,7 +175,7 @@ def get_entries(inspection_id: int, db: Session = Depends(get_db), user: User = 
     inspection = db.get(Inspection, inspection_id)
     if not inspection:
         raise HTTPException(status_code=404, detail="Inspection not found")
-    require_station_access(db, user, inspection.station_id)
+    require_inspection_access(db, user, inspection)
     return list_entries(db, inspection.id)
 
 

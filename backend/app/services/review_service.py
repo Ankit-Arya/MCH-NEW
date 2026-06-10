@@ -1,14 +1,14 @@
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from app.models.all_models import Inspection, InspectionReview, InspectionStatus, InspectionWorkflowHistory, ReviewAction, RoleCode, User
-from app.core.permissions import require_roles, require_station_access
+from app.core.permissions import DGM_ROLES, LINE_MANAGER_ROLES, require_inspection_access, require_roles
 from app.schemas.review import ReviewIn
 from app.services.audit_service import audit_log
 
 
 def review_by_line_manager(db: Session, inspection: Inspection, payload: ReviewIn, user: User) -> InspectionReview:
-    require_roles(user, {RoleCode.AM_MGR_LINE, RoleCode.DGM_LINE, RoleCode.SUPER_ADMIN})
-    require_station_access(db, user, inspection.station_id)
+    require_roles(user, LINE_MANAGER_ROLES | {RoleCode.SUPER_ADMIN, RoleCode.HK_CELL_ADMIN})
+    require_inspection_access(db, user, inspection)
     if inspection.status != InspectionStatus.UNDER_LINE_MANAGER_REVIEW:
         raise HTTPException(status_code=400, detail="Inspection is not pending Line Manager review")
     old = inspection.status.value
@@ -28,8 +28,8 @@ def review_by_line_manager(db: Session, inspection: Inspection, payload: ReviewI
 
 
 def review_by_dgm(db: Session, inspection: Inspection, payload: ReviewIn, user: User) -> InspectionReview:
-    require_roles(user, {RoleCode.DGM_LINE, RoleCode.DGM_HK, RoleCode.SUPER_ADMIN})
-    require_station_access(db, user, inspection.station_id)
+    require_roles(user, DGM_ROLES | {RoleCode.SUPER_ADMIN, RoleCode.HK_CELL_ADMIN})
+    require_inspection_access(db, user, inspection)
     if inspection.status != InspectionStatus.LINE_MANAGER_RECOMMENDED:
         raise HTTPException(status_code=400, detail="Inspection is not pending DGM review")
     old = inspection.status.value
@@ -52,6 +52,7 @@ def review_by_dgm(db: Session, inspection: Inspection, payload: ReviewIn, user: 
 
 def review_by_gm(db: Session, inspection: Inspection, payload: ReviewIn, user: User) -> InspectionReview:
     require_roles(user, {RoleCode.GM_OPS, RoleCode.SUPER_ADMIN})
+    # GM Ops is intentionally all-scope through role permissions.
     if inspection.status != InspectionStatus.GM_REVIEW_REQUIRED:
         raise HTTPException(status_code=400, detail="Inspection is not pending GM review")
     old = inspection.status.value

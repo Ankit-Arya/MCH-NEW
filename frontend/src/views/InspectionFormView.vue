@@ -13,12 +13,19 @@
 
     <div v-if="loading" class="card section-gap">Loading inspection...</div>
 
+    <div v-else-if="loadError" class="card section-gap load-error-card">
+      <h2>Inspection could not be loaded</h2>
+      <p>{{ loadError }}</p>
+      <p class="muted">If this started after access-control mapping, confirm that the logged-in user has station access for this inspection. Admin can map it from Access Control.</p>
+      <button class="btn btn-primary" @click="reloadPage">Retry</button>
+    </div>
+
     <div v-else class="inspection-entry-layout section-gap">
       <div class="card capture-card">
         <div class="card-title">
           <div>
             <h2>Add Selected Area Entry</h2>
-            <p class="muted">Photo evidence is mandatory. Video is optional.</p>
+            <p class="muted">Photo evidence is mandatory. Save Entry is unlocked only after photo capture/selection.</p>
           </div>
         </div>
 
@@ -30,6 +37,8 @@
           :loading-sub-areas="loadingSubAreas"
           :saving="saving"
           :error="error"
+          :can-save="canSaveCurrentEntry"
+          :save-blocked-text="saveBlockedText"
           @attribute-change="loadSubAreas"
           @save="saveEntry"
           @clear="clearMedia"
@@ -46,7 +55,7 @@
       <SavedEntriesList :entries="entries" :can-edit="canEdit" @delete="deleteEntry" />
     </div>
 
-    <div v-if="!loading" class="card submit-panel section-gap">
+    <div v-if="!loading && !loadError" class="card submit-panel section-gap">
       <div>
         <h2>Submit Inspection</h2>
         <p class="muted">You can submit with partial selected entries. Skipped areas are treated as Not Inspected, not failed.</p>
@@ -83,15 +92,21 @@ const subAreas = ref([])
 const entries = ref([])
 const media = ref({ photo: null, video: null })
 const error = ref('')
+const loadError = ref('')
 const message = ref('')
 const gpsError = ref('')
 const entryFormRef = ref(null)
 const mediaPanelRef = ref(null)
-const metadata = reactive({ latitude:null, longitude:null, gps_accuracy:null, captured_at:null })
+const metadata = reactive({ latitude: null, longitude: null, gps_accuracy: null, captured_at: null })
+
 const canEdit = computed(() => ['DRAFT', 'RETURNED_FOR_CLARIFICATION'].includes(inspection.value?.status))
 const statusClass = computed(() => inspection.value?.status === 'DRAFT' ? 'amber' : 'green')
+const canSaveCurrentEntry = computed(() => canEdit.value && !!media.value.photo && !saving.value)
+const saveBlockedText = computed(() => canEdit.value ? 'Capture mandatory photo first' : 'Inspection is locked')
 
 function nowIso(){ return new Date().toISOString() }
+function reloadPage(){ window.location.reload() }
+
 function captureGps(){
   gpsError.value = ''
   metadata.captured_at = nowIso()
@@ -130,9 +145,13 @@ async function uploadFile(entryId, file, mediaType){
 async function saveEntry(form){
   error.value = ''; message.value = ''
   if (!canEdit.value) { error.value = 'This inspection is already submitted/locked'; return }
-  if (!media.value.photo) { error.value = 'Photo evidence is mandatory for every entry'; return }
+  if (!media.value.photo) { error.value = 'Photo evidence is mandatory before Save Entry'; return }
   if (!metadata.captured_at) captureGps()
+
   saving.value = true
+  let createdEntry = null
+  let uploadFailed = false
+
   try {
     const payload = {
       attribute_id: form.attribute_id,
@@ -144,22 +163,35 @@ async function saveEntry(form){
       gps_accuracy: metadata.gps_accuracy,
       captured_at: metadata.captured_at || nowIso(),
     }
+
     const { data: entry } = await api.post(`/inspections/${route.params.id}/entries`, payload)
-    await uploadFile(entry.id, media.value.photo, 'PHOTO')
-    if (media.value.video) await uploadFile(entry.id, media.value.video, 'VIDEO')
+    createdEntry = entry
+
+    try {
+      await uploadFile(entry.id, media.value.photo, 'PHOTO')
+      if (media.value.video) await uploadFile(entry.id, media.value.video, 'VIDEO')
+    } catch (uploadError) {
+      uploadFailed = true
+      // Avoid orphan entries without mandatory photo evidence.
+      try { await api.delete(`/inspections/${route.params.id}/entries/${entry.id}`) } catch (_) {}
+      throw uploadError
+    }
+
     await loadEntries()
     clearMedia()
     entryFormRef.value?.resetForm()
     message.value = `${entry.entry_no} saved with evidence.`
   } catch (e) {
-    error.value = e.response?.data?.detail || 'Unable to save entry'
+    error.value = uploadFailed
+      ? 'Evidence upload failed, so the entry was not saved. Please capture/select the photo again and retry.'
+      : (e.response?.data?.detail || 'Unable to save entry')
   } finally {
     saving.value = false
   }
 }
 
 function clearMedia(){
-  media.value = { photo:null, video:null }
+  media.value = { photo: null, video: null }
   mediaPanelRef.value?.reset()
 }
 
@@ -181,14 +213,21 @@ async function submitInspection(){
 }
 
 onMounted(async()=>{
-  inspection.value = (await api.get(`/inspections/${route.params.id}`)).data
-  const contractId = route.query.contract_id || inspection.value.contract_id
-  const stationId = route.query.station_id || inspection.value.station_id
-  const check = (await api.get(`/inspections/checklist?contract_id=${contractId}&station_id=${stationId}`)).data
-  checklist.value = { attributes: check.attributes || [], grades: check.grades || check.grading_options || [] }
-  await loadEntries()
-  captureGps()
-  loading.value = false
+  loading.value = true
+  loadError.value = ''
+  try {
+    inspection.value = (await api.get(`/inspections/${route.params.id}`)).data
+    const contractId = route.query.contract_id || inspection.value.contract_id
+    const stationId = route.query.station_id || inspection.value.station_id
+    const check = (await api.get(`/inspections/checklist?contract_id=${contractId}&station_id=${stationId}`)).data
+    checklist.value = { attributes: check.attributes || [], grades: check.grades || check.grading_options || [] }
+    await loadEntries()
+    captureGps()
+  } catch (e) {
+    loadError.value = e.response?.data?.detail || 'Unable to load inspection form. Please check API logs and station access mapping.'
+  } finally {
+    loading.value = false
+  }
 })
 </script>
 
@@ -201,4 +240,7 @@ onMounted(async()=>{
 .submit-actions { display:flex; gap:10px; flex-wrap:wrap; }
 .success-text { color:#166534; font-weight:900; margin:0; }
 @media(max-width:1080px){ .inspection-entry-layout{grid-template-columns:1fr;} .capture-card{position:relative; top:auto;} .entry-hero,.submit-panel{display:grid;} }
+.load-error-card { display:grid; gap:10px; max-width:760px; }
+.load-error-card h2 { margin:0; }
+.load-error-card p { margin:0; }
 </style>

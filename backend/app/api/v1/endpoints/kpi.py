@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.deps import get_current_user
-from app.core.permissions import require_roles
+from app.core.permissions import apply_contract_scope, apply_station_scope, is_admin_scope, require_roles
 from app.models.all_models import MonthlyContractScore, MonthlyStationScore, PenaltyCalculation, RoleCode, User
 from app.schemas.kpi import MonthlyCalculationRequest, MonthlyCalculationResponse
 from app.services.kpi_calculation_service import calculate_monthly_kpi6
@@ -18,14 +18,23 @@ def calculate_monthly(payload: MonthlyCalculationRequest, db: Session = Depends(
 
 @router.get("/station-scores")
 def station_scores(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return db.query(MonthlyStationScore).order_by(MonthlyStationScore.calculated_at.desc()).limit(500).all()
+    query = db.query(MonthlyStationScore)
+    if not is_admin_scope(user):
+        query = apply_station_scope(query, MonthlyStationScore.station_id, db, user)
+    return query.order_by(MonthlyStationScore.calculated_at.desc()).limit(500).all()
 
 
 @router.get("/contract-scores")
 def contract_scores(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return db.query(MonthlyContractScore).order_by(MonthlyContractScore.calculated_at.desc()).limit(200).all()
+    query = db.query(MonthlyContractScore)
+    if not is_admin_scope(user):
+        query = apply_contract_scope(query, MonthlyContractScore.contract_id, db, user)
+    return query.order_by(MonthlyContractScore.calculated_at.desc()).limit(200).all()
 
 
 @router.get("/penalties")
 def penalties(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return db.query(PenaltyCalculation).order_by(PenaltyCalculation.created_at.desc()).limit(200).all()
+    query = db.query(PenaltyCalculation)
+    if not is_admin_scope(user):
+        query = apply_contract_scope(query, PenaltyCalculation.contract_id, db, user)
+    return query.order_by(PenaltyCalculation.created_at.desc()).limit(200).all()

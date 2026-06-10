@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
 from app.core.deps import get_current_user
-from app.core.permissions import require_roles
+from app.core.permissions import require_roles, get_accessible_station_ids, get_accessible_contract_ids, get_scope_user_ids, is_admin_scope
 from app.models.all_models import (
     BillingCycle,
     Contract,
@@ -76,14 +76,9 @@ def _require_manage(user: User) -> None:
     require_roles(user, MASTER_ADMIN_ROLES)
 
 
-# def _as_dict(obj: Any) -> dict[str, Any]:
-#     return {col.name: getattr(obj, col.name) for col in obj.__table__.columns}
-from fastapi.encoders import jsonable_encoder
-
 def _as_dict(obj: Any) -> dict[str, Any]:
-    return jsonable_encoder(
-        {col.name: getattr(obj, col.name) for col in obj.__table__.columns}
-    )
+    return {col.name: getattr(obj, col.name) for col in obj.__table__.columns}
+
 
 def _commit_or_409(db: Session) -> None:
     try:
@@ -142,21 +137,38 @@ def _deactivate(db: Session, user: User, model: Type[Any], obj_id: int, entity_t
 
 @router.get("/bootstrap")
 def bootstrap(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    users = db.query(User).options(joinedload(User.role)).filter(User.is_active == True).order_by(User.name).all()  # noqa: E712
+    scoped_station_ids = get_accessible_station_ids(db, user)
+    scoped_contract_ids = get_accessible_contract_ids(db, user)
+    scoped_user_ids = get_scope_user_ids(db, user, include_self=True)
+
+    station_query = db.query(Station).order_by(Station.station_name)
+    contract_query = db.query(Contract).order_by(Contract.contract_code)
+    contract_station_query = db.query(ContractStation).filter(ContractStation.is_active == True)  # noqa: E712
+    user_query = db.query(User).options(joinedload(User.role)).filter(User.is_active == True).order_by(User.name)  # noqa: E712
+
+    if scoped_station_ids is not None:
+        station_query = station_query.filter(Station.id.in_(scoped_station_ids) if scoped_station_ids else False)
+        contract_station_query = contract_station_query.filter(ContractStation.station_id.in_(scoped_station_ids) if scoped_station_ids else False)
+    if scoped_contract_ids is not None:
+        contract_query = contract_query.filter(Contract.id.in_(scoped_contract_ids) if scoped_contract_ids else False)
+        contract_station_query = contract_station_query.filter(ContractStation.contract_id.in_(scoped_contract_ids) if scoped_contract_ids else False)
+    if scoped_user_ids is not None and not is_admin_scope(user):
+        user_query = user_query.filter(User.id.in_(scoped_user_ids) if scoped_user_ids else False)
+
     return {
         "can_manage_master": _can_manage(user),
         "current_role": user.role.code.value if user.role else None,
         "lines": db.query(Line).order_by(Line.line_code).all(),
-        "stations": db.query(Station).order_by(Station.station_name).all(),
-        "contracts": db.query(Contract).order_by(Contract.contract_code).all(),
+        "stations": station_query.all(),
+        "contracts": contract_query.all(),
         "contractors": db.query(Contractor).order_by(Contractor.contractor_name).all(),
         "grading_schemes": db.query(GradingScheme).order_by(GradingScheme.name).all(),
         "grading_options": db.query(GradingOption).order_by(GradingOption.scheme_id, GradingOption.sort_order).all(),
         "inspection_attributes": db.query(InspectionAttribute).order_by(InspectionAttribute.sort_order).all(),
         "inspection_sub_areas": db.query(InspectionSubArea).order_by(InspectionSubArea.attribute_id, InspectionSubArea.sort_order).all(),
         "billing_cycles": db.query(BillingCycle).order_by(BillingCycle.start_date.desc()).all(),
-        "contract_stations": db.query(ContractStation).filter(ContractStation.is_active == True).all(),  # noqa: E712
-        "users": [_safe_user(u) for u in users],
+        "contract_stations": contract_station_query.all(),
+        "users": [_safe_user(u) for u in user_query.all()],
     }
 
 
@@ -202,7 +214,11 @@ def deactivate_contractor(contractor_id: int, db: Session = Depends(get_db), use
 
 @router.get("/stations", response_model=list[StationOut])
 def list_stations(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return db.query(Station).order_by(Station.station_name).all()
+    station_ids = get_accessible_station_ids(db, user)
+    query = db.query(Station).order_by(Station.station_name)
+    if station_ids is not None:
+        query = query.filter(Station.id.in_(station_ids) if station_ids else False)
+    return query.all()
 
 
 @router.post("/stations", response_model=StationOut)
@@ -225,7 +241,11 @@ def deactivate_station(station_id: int, db: Session = Depends(get_db), user: Use
 
 @router.get("/contracts", response_model=list[ContractOut])
 def list_contracts(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return db.query(Contract).order_by(Contract.contract_code).all()
+    contract_ids = get_accessible_contract_ids(db, user)
+    query = db.query(Contract).order_by(Contract.contract_code)
+    if contract_ids is not None:
+        query = query.filter(Contract.id.in_(contract_ids) if contract_ids else False)
+    return query.all()
 
 
 @router.post("/contracts", response_model=ContractOut)

@@ -16,7 +16,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 
 from app.core.database import get_db
 from app.core.deps import get_current_user
-from app.core.permissions import require_station_access
+from app.core.permissions import apply_inspection_scope, require_inspection_access
 from app.models.all_models import Inspection, InspectionEntry, InspectionMedia, InspectionStatus, InspectionType, MediaType, User
 from app.services.media_service import download_bytes, get_external_object_url
 router = APIRouter()
@@ -297,7 +297,6 @@ def _build_metadata_table(inspection: Inspection, styles) -> Table:
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (0, -1), REPORT_SURFACE),
         ("BACKGROUND", (2, 0), (2, -1), REPORT_SURFACE),
-        ("SPAN", (1, 4), (3, 4)),
         ("BOX", (0, 0), (-1, -1), 0.8, REPORT_BORDER),
         ("INNERGRID", (0, 0), (-1, -1), 0.45, REPORT_BORDER),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -342,8 +341,8 @@ def _draw_pdf_footer(canvas, doc):
     canvas.restoreState()
 
 
-def _query_inspections(db: Session, from_date=None, to_date=None, station_id=None, contract_id=None, submitted_by=None, inspection_type=None, status=None):
-    q = db.query(Inspection).order_by(Inspection.inspection_date.desc(), Inspection.id.desc())
+def _query_inspections(db: Session, user: User, from_date=None, to_date=None, station_id=None, contract_id=None, submitted_by=None, inspection_type=None, status=None):
+    q = apply_inspection_scope(db.query(Inspection).order_by(Inspection.inspection_date.desc(), Inspection.id.desc()), db, user)
     if from_date:
         q = q.filter(Inspection.inspection_date >= from_date)
     if to_date:
@@ -362,6 +361,8 @@ def _query_inspections(db: Session, from_date=None, to_date=None, station_id=Non
 
 
 def _row(i: Inspection) -> dict:
+    entries = [e for e in getattr(i, "entries", []) if not getattr(e, "is_deleted", False)]
+    media = [m for m in getattr(i, "media", []) if not getattr(m, "is_deleted", False)]
     return {
         "id": i.id,
         "inspection_no": i.inspection_no,
@@ -376,8 +377,43 @@ def _row(i: Inspection) -> dict:
         "submitted_by_name": i.submitter.name if i.submitter else None,
         "score": _inspection_score(i),
         "entry_count": len(entries),
-        "media_count": len([m for m in (i.media or []) if not m.is_deleted]),
+        "media_count": len(media),
     }
+
+
+def _paginate_query(query, page: int = 1, size: int = 20) -> dict:
+    """Return a stable server-side pagination payload for report/search screens."""
+    page = max(1, int(page or 1))
+    size = min(100, max(1, int(size or 20)))
+
+    total = query.count()
+    pages = (total + size - 1) // size if total else 0
+    items = query.offset((page - 1) * size).limit(size).all()
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "size": size,
+        "pages": pages,
+        "has_previous": page > 1,
+        "has_next": page < pages,
+    }
+
+
+def _media_counts(db: Session, entry_id: int) -> tuple[int, int]:
+    """Count non-deleted photo/video evidence attached to a specific inspection entry."""
+    media = (
+        db.query(InspectionMedia)
+        .filter(
+            InspectionMedia.inspection_entry_id == entry_id,
+            InspectionMedia.is_deleted.is_(False),
+        )
+        .all()
+    )
+    photos = sum(1 for item in media if item.media_type == MediaType.PHOTO)
+    videos = sum(1 for item in media if item.media_type == MediaType.VIDEO)
+    return photos, videos
 
 # This is a helper function which returns a Platypus Image object scaled to fit the bounding box   
 # 
@@ -591,7 +627,7 @@ def search_inspection_reports(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    query = _query_inspections(db, from_date, to_date, station_id, contract_id, submitted_by, inspection_type, status)
+    query = _query_inspections(db, user, from_date, to_date, station_id, contract_id, submitted_by, inspection_type, status)
     data = _paginate_query(query, page, size)
     data["items"] = [_row(i) for i in data["items"]]
     return data
@@ -602,7 +638,7 @@ def inspection_pdf(inspection_id: int, db: Session = Depends(get_db), user: User
     inspection = db.get(Inspection, inspection_id)
     if not inspection:
         raise HTTPException(status_code=404, detail="Inspection not found")
-    require_station_access(db, user, inspection.station_id)
+    require_inspection_access(db, user, inspection)
     buffer = BytesIO()
     styles = _configure_pdf_styles()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=28, bottomMargin=28)
@@ -701,7 +737,7 @@ def inspections_pdf(
     user: User = Depends(get_current_user),
 ):
     # PDF register intentionally exports the full filtered result, not only the current page.
-    inspections = _query_inspections(db, from_date, to_date, station_id, contract_id, submitted_by, inspection_type, status).limit(5000).all()
+    inspections = _query_inspections(db, user, from_date, to_date, station_id, contract_id, submitted_by, inspection_type, status).limit(5000).all()
     buffer = BytesIO()
     styles = _configure_pdf_styles()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=22, leftMargin=22, topMargin=24, bottomMargin=20)
