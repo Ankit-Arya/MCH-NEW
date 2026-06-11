@@ -93,7 +93,7 @@
               <td>{{ r.contract_code || '-' }}</td>
               <td>{{ r.submitted_by_name || '-' }}</td>
               <td><span class="badge">{{ shortType(r.inspection_type) }}</span></td>
-              <td><span class="badge" :class="statusClass(r.status)">{{ r.status }}</span></td>
+              <td><span class="badge" :class="statusClass(r.status)">{{ statusLabel(r.status) }}</span></td>
               <td><strong>{{ r.score }}%</strong></td>
               <td>
                 <div class="pdf-actions">
@@ -111,7 +111,7 @@
         <article class="mobile-record-card" v-for="r in rows" :key="r.id">
           <div class="mobile-record-top">
             <strong>{{ r.inspection_no }}</strong>
-            <span class="badge" :class="statusClass(r.status)">{{ r.status }}</span>
+            <span class="badge" :class="statusClass(r.status)">{{ statusLabel(r.status) }}</span>
           </div>
           <div class="mobile-record-grid">
             <span>Date</span><b>{{ formatDate(r.inspection_date) }}</b>
@@ -265,6 +265,16 @@ function cleanupPdfUrl() {
 function closePdfPreview() {
   pdfPreview.open = false
   cleanupPdfUrl()
+}
+
+function statusLabel(status) {
+  const labels = {
+    UNDER_LINE_MANAGER_REVIEW: 'SUBMITTED TO LINE MANAGER',
+    LINE_MANAGER_RECOMMENDED: 'APPROVED BY LINE MANAGER',
+    DGM_APPROVED: 'APPROVED BY DGM',
+    DRAFT: 'DRAFT'
+  }
+  return labels[status] || status
 }
 
 async function openPdf(url, paramsObj, title, filename) {
