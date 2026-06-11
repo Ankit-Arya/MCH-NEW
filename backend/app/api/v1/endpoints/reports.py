@@ -279,7 +279,8 @@ def _build_metadata_table(inspection: Inspection, styles) -> Table:
         ],
         [
             Paragraph("Status", styles["MetaLabel"]),
-            Paragraph(_safe_text(inspection.status.value), styles["MetaValue"]),
+            # Paragraph(_safe_text(inspection.status.value), styles["MetaValue"]),
+            Paragraph(_safe_text(_status_label(inspection.status.value)), styles["MetaValue"]),
             Paragraph("Inspection Score", styles["MetaLabel"]),
             Paragraph(f"<b>{_inspection_score(inspection)}%</b>", styles["MetaValue"]),
         ],
@@ -436,51 +437,6 @@ def _build_thumbnail_flowable(image_bytes: bytes, max_width: int = 150, max_heig
  
 
 # def _build_photo_preview_table(inspection: Inspection, styles):
-#     photo_media = [
-#         media for media in (inspection.media or [])
-#         if not media.is_deleted
-#         and media.media_type == MediaType.PHOTO
-#         and (not media.mime_type or media.mime_type.startswith("image/"))
-#     ]
-#     if not photo_media:
-#         return []
-
-#     story = [Paragraph("Photo Evidence Preview", styles["Heading3"]), Spacer(1, 6)]
-#     cells = []
-#     unavailable_count = 0
-#     for media in photo_media:
-#         try:
-#             thumbnail = _build_thumbnail_flowable(download_bytes(media.object_path))
-#             label = media.sub_area.name if media.sub_area else media.original_file_name
-#             cells.append([thumbnail, Spacer(1, 4), Paragraph(label, styles["BodyText"])])
-#         except Exception:
-#             unavailable_count += 1
-
-#     if not cells:
-#         return [Paragraph("Photo previews are unavailable for this inspection.", styles["Normal"])]
-
-#     columns = 2
-#     rows = [cells[index:index + columns] for index in range(0, len(cells), columns)]
-#     if rows and len(rows[-1]) < columns:
-#         rows[-1].extend([""] * (columns - len(rows[-1])))
-
-#     preview_table = Table(rows, colWidths=[250, 250], hAlign="LEFT")
-#     preview_table.setStyle(TableStyle([
-#         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-#         ("BOX", (0, 0), (-1, -1), 0.35, colors.HexColor("#dbe3f0")),
-#         ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#dbe3f0")),
-#         ("LEFTPADDING", (0, 0), (-1, -1), 8),
-#         ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-#         ("TOPPADDING", (0, 0), (-1, -1), 8),
-#         ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-#     ]))
-#     story.append(preview_table)
-#     if unavailable_count:
-#         story.extend([
-#             Spacer(1, 6),
-#             Paragraph(f"{unavailable_count} photo preview(s) could not be loaded.", styles["Italic"]),
-#         ])
-#     return story
 def _build_photo_preview_table(inspection: Inspection, styles):
     photo_media = [
         media for media in (inspection.media or [])
@@ -538,36 +494,6 @@ def _build_photo_preview_table(inspection: Inspection, styles):
     return story
 
 # Provide evidence video URL from minio in the downloaded PDF
-# def _build_video_link_section(inspection: Inspection, styles):
-#     video_media = [
-#         media for media in (inspection.media or [])
-#         if not media.is_deleted and media.media_type == MediaType.VIDEO
-#     ]
-#     if not video_media:
-#         return []
-
-#     story = [Paragraph("Video Evidence Links", styles["Heading3"]), Spacer(1, 6)]
-#     unavailable_count = 0
-#     for index, media in enumerate(video_media, start=1):
-#         try:
-#             video_url = get_external_object_url(media.object_path)
-#             label = media.sub_area.name if media.sub_area else media.original_file_name
-#             safe_label = escape(label or f"Video {index}")
-#             safe_href = escape(video_url, {'"': "&quot;"})
-#             safe_link_text = escape(video_url)
-#             story.append(
-#                 Paragraph(
-#                     f'{index}. <b>{safe_label}</b><br/><link href="{safe_href}">{safe_link_text}</link>',
-#                     styles["BodyText"],
-#                 )
-#             )
-#             story.append(Spacer(1, 8))
-#         except Exception:
-#             unavailable_count += 1
-
-#     if unavailable_count:
-#         story.append(Paragraph(f"{unavailable_count} video link(s) could not be generated.", styles["Italic"]))
-#     return story
 def _build_video_link_section(inspection: Inspection, styles):
     video_media = [
         media for media in (inspection.media or [])
@@ -612,6 +538,16 @@ def _build_video_link_section(inspection: Inspection, styles):
         story.append(Paragraph(f"{unavailable_count} video link(s) could not be generated.", styles["Italic"]))
 
     return story
+
+
+def _status_label(status_value: str | None) -> str:
+    labels = {
+        "UNDER_LINE_MANAGER_REVIEW": "SUBMITTED TO LINE MANAGER",
+        "LINE_MANAGER_RECOMMENDED": "APPROVED BY LINE MANAGER",
+        "DGM_APPROVED": "APPROVED BY DGM",
+        "DRAFT": "DRAFT",
+    }
+    return labels.get(status_value, status_value or "-")
 
 @router.get("/inspections/search")
 def search_inspection_reports(
@@ -771,7 +707,8 @@ def inspections_pdf(
                     _p(i.inspection_date, styles["TableCellCenter"]),
                     _p(i.station.station_name if i.station else i.station_id, styles["TableCell"]),
                     _p(i.submitter.name if i.submitter else i.submitted_by, styles["TableCell"]),
-                    _p(i.status.value, styles["TableCellCenter"]),
+                    # _p(i.status.value, styles["TableCellCenter"]),
+                    _p(_status_label(i.status.value), styles["TableCellCenter"]),
                     _p(e.entry_no, styles["TableCellCenter"]),
                     _p(e.attribute.name if e.attribute else e.attribute_id, styles["TableCell"]),
                     _p(e.sub_area.name if e.sub_area else e.sub_area_id, styles["TableCell"]),
