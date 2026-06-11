@@ -35,6 +35,7 @@ ENV/
 backend/.venv/
 backend/venv/
 backend/env/
+backend/celerybeat-schedule
 
 # Python build/package files
 build/

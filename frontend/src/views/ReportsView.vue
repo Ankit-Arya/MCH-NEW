@@ -8,8 +8,8 @@
       </p>
 
       <div class="filter-grid section-gap">
-        <label><span class="label">From</span><input class="input" type="date" v-model="filters.from_date" /></label>
-        <label><span class="label">To</span><input class="input" type="date" v-model="filters.to_date" /></label>
+        <label><span class="label">From</span><input class="input" type="date" v-model="filters.from_date" :max="today" /></label>
+        <label><span class="label">To</span><input class="input" type="date" v-model="filters.to_date" :max="today" /></label>
         <label>
           <span class="label">Contract</span>
           <select class="input" v-model="filters.contract_id">
@@ -158,6 +158,7 @@ const rows = ref([])
 const loading = ref(false)
 const pdfLoading = ref(false)
 const master = ref({ contracts: [], stations: [], users: [] })
+const today = new Date().toISOString().split('T')[0]
 
 const pdfPreview = reactive({
   open: false,
@@ -168,7 +169,7 @@ const pdfPreview = reactive({
 
 const defaultFilters = () => ({
   from_date: '2026-01-01',
-  to_date: '2026-05-31',
+  to_date: new Date().toISOString().split('T')[0],
   contract_id: '',
   station_id: '',
   submitted_by: '',
