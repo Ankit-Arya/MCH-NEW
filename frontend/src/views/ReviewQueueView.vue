@@ -52,7 +52,7 @@
               <td>{{ i.contract_code || '-' }}</td>
               <td>{{ i.submitted_by_name || '-' }}</td>
               <td><span class="badge">{{ shortType(i.inspection_type) }}</span></td>
-              <td><span class="badge" :class="statusClass(i.status)">{{ i.status }}</span></td>
+              <td><span class="badge" :class="statusClass(i.status)">{{ statusLabel(i.status) }}</span></td>
               <td><strong>{{ displayPercent(i.score) }}</strong></td>
               <td>{{ i.entry_count ?? '-' }} / {{ i.media_count ?? '-' }}</td>
               <td>
@@ -72,7 +72,7 @@
         <article class="mobile-record-card" v-for="i in rows" :key="i.id">
           <div class="mobile-record-top">
             <strong>{{ i.inspection_no }}</strong>
-            <span class="badge" :class="statusClass(i.status)">{{ i.status }}</span>
+            <span class="badge" :class="statusClass(i.status)">{{ statusLabel(i.status) }}</span>
           </div>
           <div class="mobile-record-grid">
             <span>Date</span><b>{{ formatDate(i.inspection_date) }}</b>
@@ -210,6 +210,17 @@ function closePdfPreview() {
   pdfPreview.open = false
   cleanupPdfUrl()
 }
+
+function statusLabel(status) {
+  const labels = {
+    UNDER_LINE_MANAGER_REVIEW: 'SUBMITTED TO LINE MANAGER',
+    LINE_MANAGER_RECOMMENDED: 'APPROVED BY LINE MANAGER',
+    DGM_APPROVED: 'APPROVED BY DGM',
+    DRAFT: 'DRAFT'
+  }
+  return labels[status] || status
+}
+
 
 async function viewPdf(item) {
   pdfLoading.value = true
