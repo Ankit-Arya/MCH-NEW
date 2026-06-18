@@ -223,3 +223,10 @@ temp/
 # Uncomment if every developer has their own override file.
 # docker-compose.override.yml
 # compose.override.yml
+
+# SSL certificates and private keys
+ssl/
+*.key
+*.pem
+*.crt
+*.cer

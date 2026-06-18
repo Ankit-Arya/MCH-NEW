@@ -37,8 +37,8 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
     command: server /data --console-address ":9001"
     ports:
-      - "9200:9000"
-      - "9201:9001"
+      - "19200:9000"
+      - "19201:9001"
     volumes:
       - minio_data:/data
     restart: unless-stopped
@@ -112,9 +112,10 @@ services:
     ports:
       - "80:80"
       # Configure certs before enabling 443 in production.
-      # - "443:443"
+      - "443:443"
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./ssl:/etc/nginx/certs:ro
     restart: unless-stopped
 
 volumes:
