@@ -1,0 +1,5 @@
+Add these lines to your repo .env file:
+
+READONLY_DATABASE_URL=postgresql+psycopg2://mch_readonly:change_this_strong_password@postgres:5432/mch_inspection
+ADMIN_SQL_MAX_ROWS=1000
+ADMIN_SQL_TIMEOUT_MS=8000

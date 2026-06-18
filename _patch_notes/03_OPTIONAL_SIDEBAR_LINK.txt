@@ -1,0 +1,6 @@
+Optional: add this line inside frontend/src/components/AppLayout.vue, below the Access Control link, if you want the SQL tool in the sidebar.
+
+<RouterLink v-if="['SUPER_ADMIN', 'HK_CELL_ADMIN'].includes(auth.user?.role)" to="/admin/sql" @click="closeMobileMenu">Admin SQL</RouterLink>
+
+Without this optional line, the tool still works at:
+/admin/sql

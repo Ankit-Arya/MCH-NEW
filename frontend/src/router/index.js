@@ -10,6 +10,7 @@ import KpiDashboardView from '../views/KpiDashboardView.vue'
 import MasterDataView from '../views/MasterDataView.vue'
 import ReportsView from '../views/ReportsView.vue'
 import AccessControlView from '../views/AccessControlView.vue'
+import AdminSqlToolView from '../views/AdminSqlToolView.vue'
 
 const routes = [
   { path: '/login', component: LoginView },
@@ -20,13 +21,15 @@ const routes = [
   { path: '/reviews', component: ReviewQueueView, meta: { requiresAuth: true } },
   { path: '/kpi', component: KpiDashboardView, meta: { requiresAuth: true } },
   { path: '/master', component: MasterDataView, meta: { requiresAuth: true } },
-  { path: '/access-control', component: AccessControlView, meta: { requiresAuth: true } }
+  { path: '/access-control', component: AccessControlView, meta: { requiresAuth: true } },
+  { path: '/admin/sql', component: AdminSqlToolView, meta: { requiresAuth: true, roles: ['SUPER_ADMIN', 'HK_CELL_ADMIN'] } }
 ]
 
 const router = createRouter({ history: createWebHistory(), routes })
 
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
+
   if (to.meta.requiresAuth && !auth.user) {
     const token = localStorage.getItem('access_token')
     if (token) {
@@ -34,6 +37,10 @@ router.beforeEach(async (to) => {
     } else {
       return '/login'
     }
+  }
+
+  if (to.meta.roles?.length && !to.meta.roles.includes(auth.user?.role)) {
+    return '/'
   }
 })
 
