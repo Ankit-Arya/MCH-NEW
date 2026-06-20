@@ -1,9 +1,12 @@
-Hotfix for Access Control blank page.
+Access Control PDF download hotfix
 
-Drop-in file:
+Replace:
 frontend/src/views/AccessControlView.vue
 
-Then rebuild frontend:
+Then rebuild:
 docker compose up -d --build frontend
 
-This replaces the previous risky hierarchy patch with a safer non-recursive tree rendering.
+Fix:
+- Replaces browser print-window based hierarchy PDF export with a lightweight client-side PDF Blob download.
+- No popup window, no window.print(), no automatic print dialog.
+- Keeps interactive hierarchy tree and mapping issue lists.

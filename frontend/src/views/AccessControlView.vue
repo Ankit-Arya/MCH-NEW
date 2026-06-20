@@ -944,66 +944,158 @@ async function saveHierarchy() {
   }
 }
 
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;')
+function plainHierarchyLines() {
+  const lines = []
+  lines.push('Access Control Reporting Hierarchy')
+  lines.push(`Generated: ${new Date().toLocaleString('en-IN')}`)
+  lines.push('')
+
+  const walk = (node) => {
+    const prefix = node.depth ? `${'  '.repeat(node.depth)}- ` : '- '
+    lines.push(`${prefix}${node.user.name || 'Unnamed user'} | ${roleLabel(node.user.role)} | ${node.user.username || ''}`)
+    for (const child of node.children || []) walk(child)
+  }
+
+  if (hierarchyTree.value.length) {
+    lines.push('Hierarchy tree')
+    lines.push('--------------')
+    for (const root of hierarchyTree.value) walk(root)
+  } else {
+    lines.push('No hierarchy mapped yet.')
+  }
+
+  lines.push('')
+  lines.push('Mapping issues')
+  lines.push('--------------')
+  if (hierarchyIssues.value.length) {
+    hierarchyIssues.value.forEach((issue, index) => {
+      lines.push(`${index + 1}. ${issue.user?.name || 'Unnamed user'} | ${roleLabel(issue.user?.role)} | ${issue.type}`)
+      lines.push(`   ${issue.message}`)
+    })
+  } else {
+    lines.push('No mapping issues detected.')
+  }
+
+  return lines
 }
 
-function printableTreeLines() {
-  const allRows = []
-  const walk = (node) => {
-    allRows.push(node)
-    for (const child of node.children) walk(child)
+function pdfText(value) {
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\x20-\x7E]/g, '-')
+    .replace(/\\/g, '\\\\')
+    .replace(/\(/g, '\\(')
+    .replace(/\)/g, '\\)')
+}
+
+function wrapPdfLine(line, limit = 92) {
+  const text = String(line ?? '')
+  if (text.length <= limit) return [text]
+  const words = text.split(' ')
+  const out = []
+  let current = ''
+
+  for (const word of words) {
+    if (!current) {
+      current = word
+    } else if ((current + ' ' + word).length <= limit) {
+      current += ' ' + word
+    } else {
+      out.push(current)
+      current = word
+    }
   }
-  for (const root of hierarchyTree.value) walk(root)
-  return allRows.map((node) => {
-    const indent = '&nbsp;'.repeat(node.depth * 6)
-    return `<div class="line">${indent}<strong>${escapeHtml(node.user.name)}</strong> <span>${escapeHtml(roleLabel(node.user.role))}</span> <small>${escapeHtml(node.user.username || '')}</small></div>`
-  }).join('')
+
+  if (current) out.push(current)
+  return out.length ? out : ['']
+}
+
+function buildPdfBlob(lines) {
+  const pageWidth = 595
+  const pageHeight = 842
+  const marginX = 42
+  const startY = 800
+  const fontSize = 10
+  const lineHeight = 14
+  const linesPerPage = 52
+  const wrapped = lines.flatMap((line) => wrapPdfLine(line))
+  const pages = []
+
+  for (let i = 0; i < wrapped.length; i += linesPerPage) {
+    pages.push(wrapped.slice(i, i + linesPerPage))
+  }
+  if (!pages.length) pages.push(['No hierarchy data available.'])
+
+  const objects = []
+  const addObject = (body) => {
+    objects.push(body)
+    return objects.length
+  }
+
+  const catalogId = addObject('')
+  const pagesId = addObject('')
+  const pageIds = []
+  const contentIds = []
+
+  pages.forEach((pageLines) => {
+    const content = [
+      'BT',
+      `/F1 ${fontSize} Tf`,
+      `${lineHeight} TL`,
+      `${marginX} ${startY} Td`,
+      ...pageLines.map((line) => `(${pdfText(line)}) Tj T*`),
+      'ET'
+    ].join('\n')
+
+    const contentId = addObject(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`)
+    const pageId = addObject(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 __FONT_ID__ 0 R >> >> /Contents ${contentId} 0 R >>`)
+    contentIds.push(contentId)
+    pageIds.push(pageId)
+  })
+
+  const fontId = addObject('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>')
+
+  objects[catalogId - 1] = `<< /Type /Catalog /Pages ${pagesId} 0 R >>`
+  objects[pagesId - 1] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(' ')}] /Count ${pageIds.length} >>`
+
+  pageIds.forEach((pageId) => {
+    objects[pageId - 1] = objects[pageId - 1].replace('__FONT_ID__', String(fontId))
+  })
+
+  let pdf = '%PDF-1.4\n%PDFSAFE\n'
+  const offsets = [0]
+  objects.forEach((body, index) => {
+    offsets.push(pdf.length)
+    pdf += `${index + 1} 0 obj\n${body}\nendobj\n`
+  })
+
+  const xrefStart = pdf.length
+  pdf += `xref\n0 ${objects.length + 1}\n`
+  pdf += '0000000000 65535 f \n'
+  for (let i = 1; i < offsets.length; i += 1) {
+    pdf += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root ${catalogId} 0 R >>\nstartxref\n${xrefStart}\n%%EOF`
+
+  return new Blob([pdf], { type: 'application/pdf' })
 }
 
 function downloadHierarchyPdf() {
-  const printWindow = window.open('', '_blank', 'width=1024,height=768')
-  if (!printWindow) {
-    window.print()
-    return
+  try {
+    const blob = buildPdfBlob(plainHierarchyLines())
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `access-control-hierarchy-${new Date().toISOString().slice(0, 10)}.pdf`
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+    success.value = 'Hierarchy PDF downloaded.'
+  } catch (e) {
+    error.value = 'Unable to download hierarchy PDF. Please try again after refreshing the page.'
   }
-  const html = `<!doctype html>
-<html>
-<head>
-  <title>Access Control Hierarchy</title>
-  <style>
-    body { font-family: Arial, sans-serif; color: #0f172a; margin: 28px; }
-    h1 { margin-bottom: 6px; color: #092b6f; }
-    .muted { color: #64748b; margin-bottom: 20px; }
-    .line { border-bottom: 1px solid #e2e8f0; padding: 9px 0; font-size: 13px; }
-    .line span { display: inline-block; margin-left: 10px; color: #1e40af; font-weight: 700; }
-    .line small { display: inline-block; margin-left: 10px; color: #64748b; }
-    .issues { margin-top: 24px; page-break-inside: avoid; }
-    .issue { border: 1px solid #fecaca; border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
-    @media print { button { display: none; } }
-  </style>
-</head>
-<body>
-  <button onclick="window.print()">Print / Save as PDF</button>
-  <h1>Access Control Reporting Hierarchy</h1>
-  <div class="muted">Generated from current access-control mapping.</div>
-  ${printableTreeLines() || '<p>No hierarchy mapped yet.</p>'}
-  <div class="issues">
-    <h2>Mapping issues</h2>
-    ${hierarchyIssues.value.length ? hierarchyIssues.value.map((issue) => `<div class="issue"><strong>${escapeHtml(issue.user.name)}</strong> — ${escapeHtml(issue.type)}<br>${escapeHtml(issue.message)}</div>`).join('') : '<p>No mapping issues detected.</p>'}
-  </div>
-</body>
-</html>`
-  printWindow.document.open()
-  printWindow.document.write(html)
-  printWindow.document.close()
-  printWindow.focus()
-  window.setTimeout(() => printWindow.print(), 300)
 }
 
 onMounted(load)
