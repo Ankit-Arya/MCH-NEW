@@ -118,9 +118,10 @@ def get_scope_user_ids(db: Session, user: User, include_self: bool = True) -> se
 def get_accessible_station_ids(db: Session, user: User) -> set[int] | None:
     """Return None for all-station access; otherwise station ids mapped to user/tree.
 
-    This is used for station dropdowns and station-start permission. It is intentionally
-    not used alone for LM/DGM inspection visibility, because LM/DGM visibility must be
-    based on subordinate submitters, not merely station overlap.
+    This is used for station dropdowns, station-start permission and master-data scope.
+    It is intentionally not used for report visibility. Reports must be submitter scoped:
+    SM/EIT see only inspections submitted by themselves; LM/DGM see inspections submitted
+    by themselves and their recursive hierarchy only.
     """
 
     if is_admin_scope(user):
@@ -164,59 +165,44 @@ def require_station_access(db: Session, user: User, station_id: int) -> None:
 
 
 def get_hierarchy_submitter_ids(db: Session, user: User, include_self: bool = True) -> set[int] | None:
-    """Submitter ids that should drive LM/DGM visibility.
+    """Submitter ids that should drive report/review visibility.
 
     For admin users None means unrestricted. For non-admin users this is the recursive
-    reporting tree. This function is separated from station scope so a DGM does not see
-    every inspection of a station only because one subordinate SM is mapped there.
+    reporting tree plus self when requested. Station access is not considered here.
     """
 
     return get_scope_user_ids(db, user, include_self=include_self)
 
 
 def apply_inspection_scope(query, db: Session, user: User):
-    """Apply strict inspection visibility.
+    """Apply strict submitter-based inspection visibility.
 
     Rules:
-    - Admin/HK Cell/GM Ops: all inspections.
-    - LM/DGM or any user with active subordinates: only inspections submitted by
-      self or recursive subordinates. This is the key hierarchy rule.
-    - SM/EIT or users without subordinates: station scope, so an SM mapped to a
-      station can see inspections for that station.
-    - If no mapping exists: only own submitted inspections.
+    - Super Admin / HK Cell / GM Ops: all inspections.
+    - Line Manager / DGM / hierarchy supervisor: inspections submitted by self and all
+      recursive subordinate users only.
+    - SM / EIT / users without subordinates: inspections submitted by self only.
+
+    Important: do not fall back to station scope here. Station scope is only for station
+    access and dropdowns. If an SM is mapped to Rajiv Chowk, they must not see another
+    SM's Rajiv Chowk inspection in Reports.
     """
 
-    if is_admin_scope(user):
+    submitter_ids = get_hierarchy_submitter_ids(db, user, include_self=True)
+    if submitter_ids is None:
         return query
-
-    descendants = get_descendant_user_ids(db, user.id)
-    if descendants:
-        submitter_ids = set(descendants)
-        submitter_ids.add(user.id)
-        return query.filter(Inspection.submitted_by.in_(submitter_ids))
-
-    station_ids = get_direct_station_ids(db, user.id)
-    if station_ids:
-        return query.filter(Inspection.station_id.in_(station_ids))
-
-    return query.filter(Inspection.submitted_by == user.id)
+    if not submitter_ids:
+        return query.filter(false())
+    return query.filter(Inspection.submitted_by.in_(submitter_ids))
 
 
 def can_access_inspection(db: Session, user: User, inspection: Inspection) -> bool:
-    if is_admin_scope(user):
+    """Return whether user can open/download a single inspection report."""
+
+    submitter_ids = get_hierarchy_submitter_ids(db, user, include_self=True)
+    if submitter_ids is None:
         return True
-
-    descendants = get_descendant_user_ids(db, user.id)
-    if descendants:
-        submitter_ids = set(descendants)
-        submitter_ids.add(user.id)
-        return inspection.submitted_by in submitter_ids
-
-    station_ids = get_direct_station_ids(db, user.id)
-    if station_ids and inspection.station_id in station_ids:
-        return True
-
-    return inspection.submitted_by == user.id
+    return inspection.submitted_by in submitter_ids
 
 
 def require_inspection_access(db: Session, user: User, inspection: Inspection) -> None:
