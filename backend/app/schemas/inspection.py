@@ -18,9 +18,12 @@ class ObservationIn(BaseModel):
 
 
 class InspectionStartIn(BaseModel):
-    contract_id: int
+    # Start Inspection must be station-driven.
+    # contract_id and inspection_type are optional only for backward compatibility
+    # with stale/older frontend builds. The backend derives both values again.
     station_id: int
-    inspection_type: InspectionType
+    contract_id: int | None = None
+    inspection_type: InspectionType | None = None
     latitude: float | None = None
     longitude: float | None = None
     gps_accuracy: float | None = None

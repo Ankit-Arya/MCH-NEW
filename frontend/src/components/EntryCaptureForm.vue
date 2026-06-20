@@ -19,9 +19,11 @@
         </div>
         <div>
           <label class="label">Sub-area</label>
-          <select class="input" v-model="form.sub_area_id" required :disabled="!form.attribute_id || loadingSubAreas">
+          <select class="input" v-model="form.sub_area_id" required :disabled="!form.attribute_id || loadingSubAreas" @change="onSubAreaChange">
             <option value="">{{ loadingSubAreas ? 'Loading...' : 'Select sub-area' }}</option>
-            <option v-for="s in subAreas" :key="s.id" :value="s.id">{{ s.name }}</option>
+            <option v-for="s in subAreas" :key="s.id" :value="s.id">
+              {{ subAreaOptionLabel(s) }}
+            </option>
           </select>
         </div>
       </div>
@@ -49,11 +51,16 @@
         <span class="step-badge">2</span>
         <div>
           <strong>Capture evidence</strong>
-          <span>Photo is mandatory before this entry can be saved. Video remains optional.</span>
+          <span>{{ evidenceHelpText }}</span>
         </div>
       </div>
 
-      <slot name="media"></slot>
+      <slot
+        name="media"
+        :selected-sub-area="selectedSubArea"
+        :photo-min-required="photoMinRequired"
+        :photo-max-allowed="photoMaxAllowed"
+      ></slot>
       <slot name="metadata"></slot>
     </div>
 
@@ -62,8 +69,8 @@
         <strong>{{ canSave ? 'Ready to save entry' : saveBlockedText }}</strong>
         <span>
           {{ canSave
-            ? 'Mandatory photo evidence is selected. Save will create the entry and upload evidence together.'
-            : 'Capture/select a photo first. The Save Entry button is intentionally locked until evidence exists.' }}
+            ? 'Mandatory photo evidence is selected. Save will create the entry and upload all selected evidence together.'
+            : `Select sub-area and capture/select ${photoMinRequired} mandatory photo${photoMinRequired === 1 ? '' : 's'} first.` }}
         </span>
       </div>
       <div class="button-row">
@@ -79,7 +86,7 @@
 </template>
 
 <script setup>
-import { reactive } from 'vue'
+import { computed, reactive } from 'vue'
 
 const props = defineProps({
   attributes: { type: Array, default: () => [] },
@@ -92,12 +99,28 @@ const props = defineProps({
   saveBlockedText: { type: String, default: 'Capture mandatory photo first' },
 })
 
-const emit = defineEmits(['attribute-change', 'save', 'clear'])
+const emit = defineEmits(['attribute-change', 'sub-area-change', 'save', 'clear'])
 const form = reactive({ attribute_id: '', sub_area_id: '', grade_code: '', remarks: '' })
+
+const selectedSubArea = computed(() => props.subAreas.find(s => Number(s.id) === Number(form.sub_area_id)) || null)
+const photoMinRequired = computed(() => Math.max(1, Number(selectedSubArea.value?.photo_min_required || 1)))
+const photoMaxAllowed = computed(() => Math.max(photoMinRequired.value, Number(selectedSubArea.value?.photo_max_allowed || 3)))
+const evidenceHelpText = computed(() => `Photo evidence is mandatory: ${photoMinRequired.value} required, up to ${photoMaxAllowed.value} allowed. Video remains optional.`)
+
+function subAreaOptionLabel(subArea){
+  const required = Number(subArea.photo_min_required || 0)
+  if (!required) return subArea.name
+  return `${subArea.name} · ${required} photo${required === 1 ? '' : 's'}`
+}
 
 function onAttributeChange(){
   form.sub_area_id = ''
-  emit('attribute-change', Number(form.attribute_id))
+  emit('sub-area-change', null)
+  emit('attribute-change', Number(form.attribute_id) || null)
+}
+
+function onSubAreaChange(){
+  emit('sub-area-change', selectedSubArea.value)
 }
 
 function submitEntry(){
@@ -110,6 +133,7 @@ function resetForm(){
   form.sub_area_id = ''
   form.grade_code = ''
   form.remarks = ''
+  emit('sub-area-change', null)
   emit('attribute-change', null)
   emit('clear')
 }

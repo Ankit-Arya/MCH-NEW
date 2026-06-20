@@ -2,6 +2,7 @@ from datetime import datetime, date
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from app.models.all_models import (
+    Contract,
     ContractStation,
     GradingOption,
     Inspection,
@@ -12,13 +13,20 @@ from app.models.all_models import (
     InspectionStatus,
     InspectionSubArea,
     InspectionSubAreaObservation,
+    InspectionType,
     InspectionWorkflowHistory,
     MediaType,
+    RoleCode,
+    Station,
     User,
+    UserStationAccess,
 )
 from app.schemas.inspection import InspectionStartIn, InspectionDraftIn, InspectionEntryCreate
 from app.core.permissions import require_station_access
 from app.services.audit_service import audit_log
+
+
+START_ADMIN_ROLES = {RoleCode.SUPER_ADMIN, RoleCode.HK_CELL_ADMIN}
 
 
 def generate_inspection_no(station_id: int, user_id: int) -> str:
@@ -33,17 +41,103 @@ def generate_entry_no(db: Session, inspection_id: int) -> str:
     return f"ENT-{count + 1:04d}"
 
 
+def _is_start_admin(user: User) -> bool:
+    return bool(user.role and user.role.code in START_ADMIN_ROLES)
+
+
+def _inspection_type_for_user(user: User) -> InspectionType:
+    code = user.role.code if user and user.role else None
+    if code == RoleCode.STATION_MANAGER:
+        return InspectionType.SM_INSPECTION
+    if code == RoleCode.EIT_MEMBER:
+        return InspectionType.EIT_INSPECTION
+    return InspectionType.SPECIAL_INSPECTION
+
+
+def _explicit_user_station_ids(db: Session, user: User) -> set[int]:
+    """Stations explicitly mapped to this user in user_station_access.
+
+    Important: Start Inspection must NOT expand line mapping into all stations of a
+    line. Line access is useful for dashboards/reviews/master scoping, but a user
+    should start an inspection only at stations directly assigned to that user.
+    """
+
+    return {
+        row.station_id
+        for row in db.query(UserStationAccess.station_id)
+        .filter(
+            UserStationAccess.user_id == user.id,
+            UserStationAccess.is_active.is_(True),
+        )
+        .all()
+    }
+
+
+def _require_start_station_access(db: Session, user: User, station_id: int) -> None:
+    if _is_start_admin(user):
+        return
+
+    if int(station_id) not in _explicit_user_station_ids(db, user):
+        raise HTTPException(
+            status_code=403,
+            detail="You can start inspections only for stations directly mapped to your user.",
+        )
+
+
+def _contract_for_start_station(db: Session, station_id: int) -> Contract:
+    station = db.get(Station, station_id)
+    if not station:
+        raise HTTPException(status_code=404, detail="Station not found")
+    if not station.is_active:
+        raise HTTPException(status_code=400, detail="Selected station is inactive")
+
+    mappings = (
+        db.query(ContractStation)
+        .join(Contract, Contract.id == ContractStation.contract_id)
+        .filter(
+            ContractStation.station_id == station_id,
+            ContractStation.is_active.is_(True),
+            Contract.is_active.is_(True),
+        )
+        .all()
+    )
+
+    if not mappings:
+        raise HTTPException(status_code=400, detail="Selected station is not mapped to any active contract")
+    if len(mappings) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Selected station has multiple active contracts. Please keep only one active contract mapping for Start Inspection.",
+        )
+
+    return mappings[0].contract
+
+
 def create_inspection(db: Session, payload: InspectionStartIn, user: User) -> Inspection:
-    require_station_access(db, user, payload.station_id)
-    mapping = db.query(ContractStation).filter_by(contract_id=payload.contract_id, station_id=payload.station_id, is_active=True).first()
-    if not mapping:
-        raise HTTPException(status_code=400, detail="Station is not mapped to selected contract")
+    _require_start_station_access(db, user, payload.station_id)
+
+    contract = _contract_for_start_station(db, payload.station_id)
+    inspection_type = _inspection_type_for_user(user)
+
+    # If a stale frontend sends old dropdown values, do not silently accept wrong values.
+    # This makes cache/build problems visible and prevents cross-station/contract starts.
+    if payload.contract_id is not None and int(payload.contract_id) != int(contract.id):
+        raise HTTPException(
+            status_code=400,
+            detail="Contract is auto-mapped from selected station. Please refresh/rebuild the frontend; requested contract does not match station mapping.",
+        )
+    if payload.inspection_type is not None and payload.inspection_type != inspection_type:
+        raise HTTPException(
+            status_code=400,
+            detail="Inspection type is auto-derived from logged-in user role. Please refresh/rebuild the frontend.",
+        )
+
     now = datetime.utcnow()
     inspection = Inspection(
         inspection_no=generate_inspection_no(payload.station_id, user.id),
-        contract_id=payload.contract_id,
+        contract_id=contract.id,
         station_id=payload.station_id,
-        inspection_type=payload.inspection_type,
+        inspection_type=inspection_type,
         inspection_date=date.today(),
         started_at=now,
         submitted_by=user.id,
@@ -53,7 +147,7 @@ def create_inspection(db: Session, payload: InspectionStartIn, user: User) -> In
         device_info=payload.device_info,
         remarks=payload.remarks,
         is_before_10am=now.hour < 10,
-        is_late=now.hour >= 10 and payload.inspection_type.value == "SM_INSPECTION",
+        is_late=now.hour >= 10 and inspection_type == InspectionType.SM_INSPECTION,
     )
     db.add(inspection)
     db.flush()

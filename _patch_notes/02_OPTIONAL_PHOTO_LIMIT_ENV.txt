@@ -1,0 +1,13 @@
+Optional only if you still see file-size errors after v3 frontend compression.
+
+The current backend reads MAX_PHOTO_MB from .env through docker-compose env_file.
+
+You can increase the real .env value, for example:
+
+MAX_PHOTO_MB=15
+
+Then restart API:
+
+docker compose restart api
+
+Do not make this very high unless required, because large photos slow upload and storage.

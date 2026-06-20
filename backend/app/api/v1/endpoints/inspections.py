@@ -7,6 +7,7 @@ from app.core.deps import get_current_user
 from app.core.permissions import apply_inspection_scope, require_inspection_access, require_station_access
 from app.models.all_models import (
     Contract,
+    ContractStation,
     GradingOption,
     Inspection,
     InspectionAttribute,
@@ -16,8 +17,10 @@ from app.models.all_models import (
     InspectionSubArea,
     InspectionType,
     MediaType,
+    RoleCode,
     Station,
     User,
+    UserStationAccess,
 )
 from app.schemas.inspection import (
     InspectionDraftIn,
@@ -42,6 +45,8 @@ from app.services.media_service import build_object_path, sha256_bytes, upload_b
 from app.services.audit_service import audit_log
 
 router = APIRouter()
+
+START_ADMIN_ROLES = {RoleCode.SUPER_ADMIN, RoleCode.HK_CELL_ADMIN}
 
 
 def _inspection_score(inspection: Inspection) -> float:
@@ -85,6 +90,82 @@ def _validate_upload_file(media_type: MediaType, file: UploadFile, data: bytes) 
         raise HTTPException(status_code=400, detail="VIDEO upload must be a video file")
 
 
+def _is_start_admin(user: User) -> bool:
+    return bool(user.role and user.role.code in START_ADMIN_ROLES)
+
+
+def _inspection_type_for_user(user: User) -> InspectionType:
+    code = user.role.code if user and user.role else None
+    if code == RoleCode.STATION_MANAGER:
+        return InspectionType.SM_INSPECTION
+    if code == RoleCode.EIT_MEMBER:
+        return InspectionType.EIT_INSPECTION
+    return InspectionType.SPECIAL_INSPECTION
+
+
+def _explicit_user_station_ids(db: Session, user: User) -> set[int]:
+    """Return only stations explicitly mapped to the logged-in user.
+
+    Do not expand UserLineAccess here. For Start Inspection, line access must not
+    become permission to start inspection at every station on that line.
+    """
+
+    return {
+        row.station_id
+        for row in db.query(UserStationAccess.station_id)
+        .filter(
+            UserStationAccess.user_id == user.id,
+            UserStationAccess.is_active.is_(True),
+        )
+        .all()
+    }
+
+
+def _station_contract_status(db: Session, station: Station) -> dict:
+    mappings = (
+        db.query(ContractStation)
+        .join(Contract, Contract.id == ContractStation.contract_id)
+        .filter(
+            ContractStation.station_id == station.id,
+            ContractStation.is_active.is_(True),
+            Contract.is_active.is_(True),
+        )
+        .all()
+    )
+
+    base = {
+        "id": station.id,
+        "station_id": station.id,
+        "station_code": station.station_code,
+        "station_name": station.station_name,
+        "line_id": station.line_id,
+        "contract_id": None,
+        "contract_code": None,
+        "contract_name": None,
+        "is_startable": False,
+        "message": None,
+    }
+
+    if not mappings:
+        base["message"] = "Station is mapped to you but has no active contract mapping."
+        return base
+
+    if len(mappings) > 1:
+        base["message"] = "Station has multiple active contract mappings. Keep only one active contract for Start Inspection."
+        return base
+
+    contract = mappings[0].contract
+    base.update(
+        {
+            "contract_id": contract.id,
+            "contract_code": contract.contract_code,
+            "contract_name": contract.contract_name,
+            "is_startable": True,
+        }
+    )
+    return base
+
+
 @router.get("")
 def list_inspections(
     from_date: date | None = None,
@@ -118,6 +199,38 @@ def list_inspections(
     if status:
         query = query.filter(Inspection.status == status)
     return [_row(i) for i in query.limit(limit).all()]
+
+
+@router.get("/start-options")
+def start_options(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Options for Start Inspection.
+
+    This endpoint is intentionally stricter than /master/bootstrap:
+    - Non-admin users see only stations explicitly mapped to their own user.
+    - UserLineAccess is NOT expanded here.
+    - Contract is returned as a derived read-only value from station mapping.
+    - Inspection type is returned as a derived read-only value from user role.
+    """
+
+    query = db.query(Station).filter(Station.is_active.is_(True)).order_by(Station.station_name)
+
+    if not _is_start_admin(user):
+        station_ids = _explicit_user_station_ids(db, user)
+        if not station_ids:
+            return {
+                "current_role": user.role.code.value if user.role else None,
+                "inspection_type": _inspection_type_for_user(user).value,
+                "stations": [],
+                "message": "No stations are directly mapped to this user.",
+            }
+        query = query.filter(Station.id.in_(station_ids))
+
+    stations = [_station_contract_status(db, station) for station in query.all()]
+    return {
+        "current_role": user.role.code.value if user.role else None,
+        "inspection_type": _inspection_type_for_user(user).value,
+        "stations": stations,
+    }
 
 
 @router.get("/checklist")
