@@ -15,7 +15,7 @@
       <p>{{ success }}</p>
     </section>
 
-    <section class="grid grid-2 section-gap" v-if="!loading && !error">
+    <section class="grid grid-2 section-gap" v-if="!loading && !loadError">
       <div class="card panel-card">
         <div class="card-title">
           <div>
@@ -25,37 +25,86 @@
           <button v-if="editingUserId" class="btn btn-muted" @click="resetUserForm">New user</button>
         </div>
 
+        <div class="requirements-box">
+          <strong>Minimum requirements</strong>
+          <ul>
+            <li>Full name: required, at least 2 characters.</li>
+            <li>Username: required, at least 3 characters.</li>
+            <li v-if="!editingUserId">Temporary password: required, at least 6 characters.</li>
+            <li>Role: required.</li>
+            <li>Employee no, mobile and email are optional.</li>
+          </ul>
+        </div>
+
         <div class="form-grid">
           <div>
-            <label class="label">Employee no</label>
-            <input class="input" v-model.trim="userForm.emp_number" placeholder="e.g. 12345" />
+            <label class="label" for="access-emp-number">Employee no</label>
+            <input id="access-emp-number" class="input" v-model.trim="userForm.emp_number" placeholder="e.g. 12345" />
+            <p class="field-hint">Optional. Use official employee number if available.</p>
           </div>
           <div>
-            <label class="label">Full name</label>
-            <input class="input" v-model.trim="userForm.name" placeholder="e.g. Rajesh Kumar" />
+            <label class="label" for="access-name">Full name <span class="required-star">*</span></label>
+            <input
+              id="access-name"
+              class="input"
+              :class="{ 'input-invalid': submittedUserForm && userFormErrors.name }"
+              v-model.trim="userForm.name"
+              placeholder="e.g. Rajesh Kumar"
+              autocomplete="name"
+            />
+            <p class="field-hint">Required. Minimum 2 characters.</p>
+            <p v-if="submittedUserForm && userFormErrors.name" class="field-error">{{ userFormErrors.name }}</p>
           </div>
           <div>
-            <label class="label">Username</label>
-            <input class="input" v-model.trim="userForm.username" placeholder="e.g. sm.rajesh" />
+            <label class="label" for="access-username">Username <span class="required-star">*</span></label>
+            <input
+              id="access-username"
+              class="input"
+              :class="{ 'input-invalid': submittedUserForm && userFormErrors.username }"
+              v-model.trim="userForm.username"
+              placeholder="e.g. sm.rajesh"
+              autocomplete="username"
+            />
+            <p class="field-hint">Required. Minimum 3 characters. Use a simple login name like <code>sm.lajpat</code>.</p>
+            <p v-if="submittedUserForm && userFormErrors.username" class="field-error">{{ userFormErrors.username }}</p>
           </div>
           <div v-if="!editingUserId">
-            <label class="label">Temporary password</label>
-            <input class="input" v-model="userForm.password" type="text" placeholder="Admin-set password" />
+            <label class="label" for="access-password">Temporary password <span class="required-star">*</span></label>
+            <input
+              id="access-password"
+              class="input"
+              :class="{ 'input-invalid': submittedUserForm && userFormErrors.password }"
+              v-model="userForm.password"
+              type="text"
+              placeholder="Minimum 6 characters"
+              autocomplete="new-password"
+            />
+            <p class="field-hint">Required for new users. Minimum 6 characters. Share it securely and ask the user to change it later.</p>
+            <p v-if="submittedUserForm && userFormErrors.password" class="field-error">{{ userFormErrors.password }}</p>
           </div>
           <div>
-            <label class="label">Role</label>
-            <select class="input" v-model="userForm.role_code">
+            <label class="label" for="access-role">Role <span class="required-star">*</span></label>
+            <select
+              id="access-role"
+              class="input"
+              :class="{ 'input-invalid': submittedUserForm && userFormErrors.role_code }"
+              v-model="userForm.role_code"
+            >
               <option value="">Select role</option>
               <option v-for="role in roles" :key="role" :value="role">{{ roleLabel(role) }}</option>
             </select>
+            <p class="field-hint">Required. Role decides what the user can see and do.</p>
+            <p v-if="submittedUserForm && userFormErrors.role_code" class="field-error">{{ userFormErrors.role_code }}</p>
           </div>
           <div>
-            <label class="label">Mobile</label>
-            <input class="input" v-model.trim="userForm.mobile" placeholder="optional" />
+            <label class="label" for="access-mobile">Mobile</label>
+            <input id="access-mobile" class="input" v-model.trim="userForm.mobile" placeholder="optional" autocomplete="tel" />
+            <p class="field-hint">Optional.</p>
           </div>
           <div>
-            <label class="label">Email</label>
-            <input class="input" v-model.trim="userForm.email" placeholder="optional" />
+            <label class="label" for="access-email">Email</label>
+            <input id="access-email" class="input" v-model.trim="userForm.email" placeholder="optional" autocomplete="email" />
+            <p class="field-hint">Optional. Used only if your workflow needs email communication later.</p>
           </div>
           <label class="toggle-row">
             <input type="checkbox" v-model="userForm.is_active" />
@@ -63,7 +112,7 @@
           </label>
         </div>
 
-        <button class="btn btn-primary full-button" :disabled="savingUser || !canSaveUser" @click="saveUser">
+        <button class="btn btn-primary full-button" :disabled="savingUser" @click="saveUser">
           {{ savingUser ? 'Saving...' : editingUserId ? 'Update user' : 'Create login user' }}
         </button>
 
@@ -117,7 +166,7 @@
       </div>
     </section>
 
-    <section class="grid grid-2 section-gap" v-if="!loading && !error">
+    <section class="grid grid-2 section-gap" v-if="!loading && !loadError">
       <div class="card panel-card">
         <div class="card-title">
           <div>
@@ -201,7 +250,7 @@
       </div>
     </section>
 
-    <section class="card section-gap" v-if="!loading && !error">
+    <section class="card section-gap" v-if="!loading && !loadError">
       <div class="card-title">
         <div>
           <h2>Current hierarchy</h2>
@@ -252,6 +301,7 @@ import AppLayout from '../components/AppLayout.vue'
 import { api } from '../services/api'
 
 const loading = ref(true)
+const loadError = ref('')
 const error = ref('')
 const success = ref('')
 const users = ref([])
@@ -265,6 +315,7 @@ const reportingLinks = ref([])
 const userSearch = ref('')
 const editingUserId = ref(0)
 const savingUser = ref(false)
+const submittedUserForm = ref(false)
 const userForm = ref(defaultUserForm())
 
 const selectedAccessUserId = ref(0)
@@ -309,11 +360,9 @@ const hierarchyRows = computed(() => reportingLinks.value.map((link) => ({
   subordinate: userById.value[link.subordinate_user_id]
 })))
 
-const canSaveUser = computed(() => {
-  if (!userForm.value.name || !userForm.value.username || !userForm.value.role_code) return false
-  if (!editingUserId.value && !userForm.value.password) return false
-  return true
-})
+const userFormErrors = computed(() => validateUserForm())
+
+const canSaveUser = computed(() => Object.keys(userFormErrors.value).length === 0)
 
 function defaultUserForm() {
   return {
@@ -326,6 +375,28 @@ function defaultUserForm() {
     email: '',
     is_active: true
   }
+}
+
+function validateUserForm() {
+  const errors = {}
+  const name = userForm.value.name?.trim() || ''
+  const username = userForm.value.username?.trim() || ''
+  const password = userForm.value.password || ''
+
+  if (!name) errors.name = 'Full name is required.'
+  else if (name.length < 2) errors.name = 'Full name must be at least 2 characters.'
+
+  if (!username) errors.username = 'Username is required.'
+  else if (username.length < 3) errors.username = 'Username must be at least 3 characters.'
+
+  if (!editingUserId.value) {
+    if (!password) errors.password = 'Temporary password is required for new users.'
+    else if (password.length < 6) errors.password = 'Temporary password must be at least 6 characters.'
+  }
+
+  if (!userForm.value.role_code) errors.role_code = 'Role is required.'
+
+  return errors
 }
 
 function roleLabel(role) {
@@ -352,8 +423,67 @@ function isDgm(role) {
   return ['DGM_LINE', 'DGM_HK'].includes(role)
 }
 
+function fieldLabel(field) {
+  const labels = {
+    username: 'Username',
+    password: 'Password',
+    name: 'Full name',
+    emp_number: 'Employee no',
+    email: 'Email',
+    mobile: 'Mobile',
+    role_code: 'Role',
+    station_ids: 'Station access',
+    line_ids: 'Line access',
+    user_id: 'User',
+    supervisor_user_id: 'Supervisor',
+    subordinate_user_ids: 'Subordinate users',
+    is_active: 'Active login'
+  }
+  return labels[field] || String(field || '').replaceAll('_', ' ')
+}
+
+function detailItemToMessage(item) {
+  if (!item) return ''
+  if (typeof item === 'string') return item
+
+  if (typeof item === 'object') {
+    const loc = Array.isArray(item.loc) ? item.loc : []
+    const field = loc.filter((part) => !['body', 'query', 'path'].includes(String(part))).pop()
+    const label = field ? fieldLabel(field) : ''
+    const message = item.msg || item.message || item.detail || ''
+    if (label && message) return `${label}: ${message}`
+    if (message) return String(message)
+  }
+
+  try {
+    return JSON.stringify(item)
+  } catch {
+    return String(item)
+  }
+}
+
+function formatApiError(e, fallback) {
+  const data = e?.response?.data
+  const detail = data?.detail ?? data?.message ?? data?.error
+
+  if (Array.isArray(detail)) {
+    const messages = detail.map(detailItemToMessage).filter(Boolean)
+    return messages.length ? messages.join(' ') : fallback
+  }
+
+  if (typeof detail === 'string') return detail
+
+  if (detail && typeof detail === 'object') {
+    const message = detailItemToMessage(detail)
+    return message || fallback
+  }
+
+  return fallback
+}
+
 async function load() {
   loading.value = true
+  loadError.value = ''
   error.value = ''
   try {
     const [{ data: bootstrap }, { data: allUsers }] = await Promise.all([
@@ -368,7 +498,9 @@ async function load() {
     lineAccess.value = bootstrap.line_access || []
     reportingLinks.value = bootstrap.reporting_links || []
   } catch (e) {
-    error.value = e.response?.data?.detail || 'Unable to load access-control data. Only Admin/HK Cell can manage users and mappings.'
+    const message = formatApiError(e, 'Unable to load access-control data. Only Admin/HK Cell can manage users and mappings.')
+    error.value = message
+    loadError.value = message
   } finally {
     loading.value = false
   }
@@ -381,11 +513,13 @@ function clearMessages() {
 
 function resetUserForm() {
   editingUserId.value = 0
+  submittedUserForm.value = false
   userForm.value = defaultUserForm()
 }
 
 function editUser(user) {
   clearMessages()
+  submittedUserForm.value = false
   editingUserId.value = user.id
   userForm.value = {
     emp_number: user.emp_number || '',
@@ -409,8 +543,15 @@ function cleanPayload(payload) {
 }
 
 async function saveUser() {
-  savingUser.value = true
+  submittedUserForm.value = true
   clearMessages()
+
+  if (!canSaveUser.value) {
+    error.value = 'Please fix the highlighted fields before saving.'
+    return
+  }
+
+  savingUser.value = true
   try {
     if (editingUserId.value) {
       const payload = cleanPayload({ ...userForm.value })
@@ -424,7 +565,7 @@ async function saveUser() {
     }
     await load()
   } catch (e) {
-    error.value = e.response?.data?.detail || 'Unable to save user'
+    error.value = formatApiError(e, 'Unable to save user')
   } finally {
     savingUser.value = false
   }
@@ -432,7 +573,7 @@ async function saveUser() {
 
 async function resetPassword(user) {
   clearMessages()
-  const password = window.prompt(`Enter new temporary password for ${user.name}`)
+  const password = window.prompt(`Enter new temporary password for ${user.name}\n\nMinimum requirement: at least 6 characters.`)
   if (!password) return
   if (password.length < 6) {
     error.value = 'Password must be at least 6 characters.'
@@ -442,7 +583,7 @@ async function resetPassword(user) {
     await api.put(`/users/${user.id}/password`, { password })
     success.value = `Password reset for ${user.name}. Share the new temporary password securely.`
   } catch (e) {
-    error.value = e.response?.data?.detail || 'Unable to reset password'
+    error.value = formatApiError(e, 'Unable to reset password')
   }
 }
 
@@ -456,7 +597,7 @@ async function toggleUserStatus(user) {
     success.value = `${user.name} ${nextStatus ? 'activated' : 'deactivated'} successfully.`
     await load()
   } catch (e) {
-    error.value = e.response?.data?.detail || 'Unable to update user status'
+    error.value = formatApiError(e, 'Unable to update user status')
   }
 }
 
@@ -484,7 +625,7 @@ async function saveAccess() {
     success.value = 'Station/line access saved.'
     await load()
   } catch (e) {
-    error.value = e.response?.data?.detail || 'Unable to save station/line access'
+    error.value = formatApiError(e, 'Unable to save station/line access')
   } finally {
     savingAccess.value = false
   }
@@ -502,7 +643,7 @@ async function saveHierarchy() {
     success.value = 'Reporting hierarchy saved.'
     await load()
   } catch (e) {
-    error.value = e.response?.data?.detail || 'Unable to save reporting hierarchy'
+    error.value = formatApiError(e, 'Unable to save reporting hierarchy')
   } finally {
     savingHierarchy.value = false
   }
@@ -519,6 +660,22 @@ onMounted(load)
 .error-text { color: #b91c1c; font-weight: 800; }
 .success-card { border-color: #bbf7d0; background: #f0fdf4; color: #166534; font-weight: 800; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.required-star { color: #b91c1c; }
+.field-hint { margin: 5px 0 0; color: #64748b; font-size: 12px; line-height: 1.4; }
+.field-hint code { background: #e0f2fe; border-radius: 6px; padding: 1px 5px; color: #0f3f8f; }
+.field-error { margin: 5px 0 0; color: #b91c1c; font-size: 12px; font-weight: 800; line-height: 1.4; }
+.input-invalid { border-color: #ef4444 !important; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.12); }
+.requirements-box {
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  border-radius: 16px;
+  padding: 12px 14px;
+  color: #1e3a8a;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.requirements-box strong { display: block; margin-bottom: 4px; }
+.requirements-box ul { margin: 0; padding-left: 18px; }
 .toggle-row { display: flex; align-items: center; gap: 10px; font-weight: 800; color: #0f172a; padding-top: 28px; }
 .user-strip,
 .flow-hint,
