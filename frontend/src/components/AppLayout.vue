@@ -51,7 +51,10 @@
         <RouterLink to="/" @click="closeMobileMenu">Dashboard</RouterLink>
         <RouterLink to="/inspections/start" @click="closeMobileMenu">Start Inspection</RouterLink>
         <RouterLink to="/reports" @click="closeMobileMenu">Reports & PDFs</RouterLink>
-        <RouterLink to="/reviews" @click="closeMobileMenu">Review Queue</RouterLink>
+        <RouterLink to="/reviews" @click="closeMobileMenu">
+          Review Queue
+          <span v-if="pendingReviewNotice.count" class="nav-review-pill">{{ pendingReviewNotice.count }}</span>
+        </RouterLink>
         <RouterLink to="/kpi" @click="closeMobileMenu">KPI & Penalty</RouterLink>
         <RouterLink to="/master" @click="closeMobileMenu">Master Data</RouterLink>
         <RouterLink to="/access-control" @click="closeMobileMenu">Access Control</RouterLink>
@@ -73,6 +76,17 @@
           </div>
         </div>
 
+        <button
+          v-if="pendingReviewNotice.count"
+          class="review-alert-chip"
+          type="button"
+          @click="openPendingReviewNotice"
+          :title="`${pendingReviewNotice.count} pending review(s)`"
+        >
+          <span class="review-alert-dot" aria-hidden="true"></span>
+          {{ pendingReviewNotice.count }} pending review{{ pendingReviewNotice.count === 1 ? '' : 's' }}
+        </button>
+
         <button class="btn btn-muted logout-btn" type="button" @click="logout">
           Logout
         </button>
@@ -80,19 +94,78 @@
 
       <slot />
     </main>
+
+    <div
+      v-if="pendingReviewNotice.open"
+      class="review-notice-backdrop"
+      role="presentation"
+      @click.self="dismissPendingReviewNotice"
+    >
+      <section
+        class="review-notice-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="pending-review-title"
+      >
+        <button
+          class="review-notice-close"
+          type="button"
+          aria-label="Close pending review notification"
+          @click="dismissPendingReviewNotice"
+        >
+          ×
+        </button>
+
+        <div class="review-notice-icon" aria-hidden="true">!</div>
+        <p class="review-notice-kicker">Review attention required</p>
+        <h2 id="pending-review-title">
+          {{ pendingReviewNotice.count }} inspection review{{ pendingReviewNotice.count === 1 ? '' : 's' }} pending at your level
+        </h2>
+        <p class="review-notice-text">
+          These inspections are waiting for action from {{ reviewerRoleLabel }}. Open the Review Queue to view PDFs, tracker status and approve or recommend as applicable.
+        </p>
+
+        <div class="review-notice-meta">
+          <span>Logged in as</span>
+          <strong>{{ auth.user?.name || 'User' }}</strong>
+          <small>{{ reviewerRoleLabel }}</small>
+        </div>
+
+        <div class="review-notice-actions">
+          <button class="btn btn-primary" type="button" @click="goToReviews">
+            Open Review Queue
+          </button>
+          <button class="btn btn-muted" type="button" @click="dismissPendingReviewNotice">
+            Remind me later
+          </button>
+        </div>
+      </section>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { api } from '../services/api'
 
 const router = useRouter()
 const auth = useAuthStore()
 const mobileMenuOpen = ref(false)
 
 const isMobileMenuHidden = computed(() => (mobileMenuOpen.value ? 'false' : 'true'))
+
+const reviewerRoles = new Set(['AM_MGR_LINE', 'AM_MGR_HK', 'DGM_LINE', 'DGM_HK', 'GM_OPS'])
+
+const pendingReviewNotice = reactive({
+  open: false,
+  count: 0,
+  checkedKey: '',
+  loading: false
+})
+
+const reviewerRoleLabel = computed(() => roleLabel(auth.user?.role))
 
 let lockedScrollY = 0
 let previousBodyPosition = ''
@@ -102,6 +175,22 @@ let previousBodyRight = ''
 let previousBodyWidth = ''
 let previousBodyOverflow = ''
 let previousHtmlOverscroll = ''
+
+function roleLabel(role) {
+  const labels = {
+    SUPER_ADMIN: 'Super Admin',
+    HK_CELL_ADMIN: 'HK Cell Admin',
+    GM_OPS: 'GM/Ops',
+    DGM_LINE: 'DGM Line',
+    DGM_HK: 'DGM HK',
+    AM_MGR_LINE: 'Line Manager',
+    AM_MGR_HK: 'HK Manager',
+    STATION_MANAGER: 'Station Manager',
+    EIT_MEMBER: 'External Inspection Team',
+    AUDITOR: 'Auditor'
+  }
+  return labels[role] || role || 'Reviewer'
+}
 
 function lockPageScroll() {
   if (typeof window === 'undefined' || typeof document === 'undefined') return
@@ -148,16 +237,82 @@ function closeMobileMenu() {
 
 function logout() {
   closeMobileMenu()
+  pendingReviewNotice.open = false
+  pendingReviewNotice.count = 0
   auth.logout()
   router.push('/login')
 }
 
 function handleKeydown(event) {
-  if (event.key === 'Escape') closeMobileMenu()
+  if (event.key !== 'Escape') return
+  if (pendingReviewNotice.open) {
+    dismissPendingReviewNotice()
+    return
+  }
+  closeMobileMenu()
 }
 
 function handleResize() {
   if (window.innerWidth > 820) closeMobileMenu()
+}
+
+function pendingReviewSessionKey(user) {
+  if (!user?.id && !user?.username && !user?.role) return ''
+  return `mch-pending-review-popup:${user.id || user.username || 'user'}:${user.role}`
+}
+
+function shouldCheckPendingReviews(user) {
+  return Boolean(user?.role && reviewerRoles.has(user.role))
+}
+
+function markNoticeChecked(key) {
+  if (!key || typeof sessionStorage === 'undefined') return
+  sessionStorage.setItem(key, 'checked')
+}
+
+function wasNoticeChecked(key) {
+  if (!key || typeof sessionStorage === 'undefined') return false
+  return sessionStorage.getItem(key) === 'checked'
+}
+
+function openPendingReviewNotice() {
+  if (pendingReviewNotice.count > 0) pendingReviewNotice.open = true
+}
+
+function dismissPendingReviewNotice() {
+  pendingReviewNotice.open = false
+  markNoticeChecked(pendingReviewNotice.checkedKey)
+}
+
+async function goToReviews() {
+  dismissPendingReviewNotice()
+  closeMobileMenu()
+  await router.push('/reviews')
+}
+
+async function checkPendingReviewsForUser(user) {
+  if (!shouldCheckPendingReviews(user) || pendingReviewNotice.loading) return
+
+  const key = pendingReviewSessionKey(user)
+  if (!key || wasNoticeChecked(key)) return
+
+  pendingReviewNotice.loading = true
+  pendingReviewNotice.checkedKey = key
+
+  try {
+    const { data } = await api.get('/reviews/pending', { params: { page: 1, size: 1 } })
+    const count = Number(data?.total || 0)
+    pendingReviewNotice.count = count
+    if (count > 0 && router.currentRoute.value.path !== '/reviews') {
+      pendingReviewNotice.open = true
+    }
+    if (count === 0) markNoticeChecked(key)
+  } catch {
+    pendingReviewNotice.count = 0
+    markNoticeChecked(key)
+  } finally {
+    pendingReviewNotice.loading = false
+  }
 }
 
 watch(
@@ -170,9 +325,18 @@ watch(mobileMenuOpen, (isOpen) => {
   else unlockPageScroll()
 })
 
+watch(
+  () => auth.user,
+  (user) => {
+    checkPendingReviewsForUser(user)
+  },
+  { immediate: true }
+)
+
 onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
   window.addEventListener('resize', handleResize)
+  checkPendingReviewsForUser(auth.user)
 })
 
 onBeforeUnmount(() => {
@@ -259,6 +423,10 @@ onBeforeUnmount(() => {
 }
 
 .main-nav a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   padding: 13px 14px;
   border-radius: 14px;
   color: #dbeafe;
@@ -270,6 +438,21 @@ onBeforeUnmount(() => {
 .main-nav a:hover {
   background: rgba(255,255,255,.13);
   color: white;
+}
+
+.nav-review-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: white;
+  font-size: 12px;
+  font-weight: 900;
+  box-shadow: 0 10px 22px rgba(239,68,68,.28);
 }
 
 .drawer-user-card {
@@ -332,6 +515,33 @@ onBeforeUnmount(() => {
   max-width: 46vw;
 }
 
+.review-alert-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #fecaca;
+  border-radius: 999px;
+  background: #fff1f2;
+  color: #991b1b;
+  font-weight: 900;
+  padding: 9px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 12px 24px rgba(153,27,27,.08);
+}
+
+.review-alert-chip:hover {
+  background: #ffe4e6;
+}
+
+.review-alert-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #ef4444;
+  box-shadow: 0 0 0 5px rgba(239,68,68,.14);
+}
+
 .logout-btn {
   margin-left: auto;
   flex: 0 0 auto;
@@ -388,6 +598,115 @@ onBeforeUnmount(() => {
 
 .mobile-menu-btn.is-open span:nth-child(3) {
   transform: translateY(-8px) rotate(-45deg);
+}
+
+.review-notice-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(15,23,42,.46);
+  backdrop-filter: blur(4px);
+}
+
+.review-notice-modal {
+  width: min(520px, 100%);
+  position: relative;
+  border-radius: 28px;
+  border: 1px solid rgba(219,227,240,.95);
+  background:
+    radial-gradient(circle at 0 0, rgba(239,68,68,.10), transparent 34%),
+    linear-gradient(135deg, #ffffff 0%, #f8fbff 100%);
+  box-shadow: 0 34px 90px rgba(15,23,42,.26);
+  padding: 28px;
+  text-align: center;
+}
+
+.review-notice-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #0f172a;
+  font-size: 25px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.review-notice-close:hover {
+  background: #cbd5e1;
+}
+
+.review-notice-icon {
+  width: 70px;
+  height: 70px;
+  margin: 0 auto 14px;
+  display: grid;
+  place-items: center;
+  border-radius: 22px;
+  background: linear-gradient(135deg, #ef4444, #f97316);
+  color: white;
+  font-size: 38px;
+  font-weight: 1000;
+  box-shadow: 0 20px 40px rgba(239,68,68,.26);
+}
+
+.review-notice-kicker {
+  margin: 0 0 6px;
+  color: #991b1b;
+  font-size: 12px;
+  font-weight: 1000;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+
+.review-notice-modal h2 {
+  margin: 0;
+  color: #0f172a;
+  font-size: clamp(22px, 3vw, 30px);
+  line-height: 1.15;
+}
+
+.review-notice-text {
+  max-width: 440px;
+  margin: 12px auto 0;
+  color: #475569;
+  line-height: 1.6;
+}
+
+.review-notice-meta {
+  display: grid;
+  gap: 3px;
+  margin: 18px auto 0;
+  border: 1px solid #dbeafe;
+  border-radius: 18px;
+  background: #f8fbff;
+  padding: 12px;
+  color: #0f172a;
+}
+
+.review-notice-meta span,
+.review-notice-meta small {
+  color: #64748b;
+  font-weight: 800;
+}
+
+.review-notice-meta strong {
+  font-size: 16px;
+}
+
+.review-notice-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 20px;
 }
 
 @media (max-width: 820px) {
@@ -573,6 +892,10 @@ onBeforeUnmount(() => {
     line-height: 1;
   }
 
+  .main-nav a:has(.nav-review-pill)::after {
+    content: '';
+  }
+
   .sidebar-note {
     display: none;
   }
@@ -584,6 +907,20 @@ onBeforeUnmount(() => {
 
   .topbar {
     display: none;
+  }
+
+  .review-notice-backdrop {
+    padding: 16px;
+  }
+
+  .review-notice-modal {
+    padding: 24px 18px;
+    border-radius: 24px;
+  }
+
+  .review-notice-actions {
+    display: grid;
+    grid-template-columns: 1fr;
   }
 }
 
