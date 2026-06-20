@@ -3,7 +3,7 @@
     <section class="card hero-panel">
       <h1>Access Control & User Management</h1>
       <p class="muted">
-        Admin creates SM, LM, DGM, EIT and other users here. Then map stations and reporting hierarchy on the same page.
+        Admin creates SM, LM, DGM, EIT and other users here. Then map station scope and reporting hierarchy from one page.
         There is no public sign-up flow.
       </p>
     </section>
@@ -167,7 +167,7 @@
     </section>
 
     <section class="grid grid-2 section-gap" v-if="!loading && !loadError">
-      <div class="card panel-card">
+      <div id="scope-editor" class="card panel-card">
         <div class="card-title">
           <div>
             <h2>User scope</h2>
@@ -209,11 +209,11 @@
         </button>
       </div>
 
-      <div class="card panel-card">
+      <div id="hierarchy-editor" class="card panel-card">
         <div class="card-title">
           <div>
-            <h2>Reporting hierarchy</h2>
-            <p class="muted small-text">Use this for LM → SM and DGM → LM forwarding and visibility.</p>
+            <h2>Reporting hierarchy mapping</h2>
+            <p class="muted small-text">Select a supervisor and map the immediate child users under that supervisor.</p>
           </div>
         </div>
 
@@ -251,35 +251,100 @@
     </section>
 
     <section class="card section-gap" v-if="!loading && !loadError">
+      <div class="card-title tree-title-row">
+        <div>
+          <h2>Interactive reporting hierarchy</h2>
+          <p class="muted small-text">Open nodes to view the chain from senior roles down to SM/EIT users. Use actions to update mapping or scope.</p>
+        </div>
+        <div class="tree-actions">
+          <button class="btn btn-muted tiny-btn" type="button" @click="expandAll">Expand all</button>
+          <button class="btn btn-muted tiny-btn" type="button" @click="collapseAll">Collapse all</button>
+          <button class="btn btn-primary tiny-btn" type="button" @click="downloadHierarchyPdf">Download hierarchy PDF</button>
+        </div>
+      </div>
+
+      <div class="hierarchy-summary-grid">
+        <div class="summary-tile"><span>Total active users</span><strong>{{ activeUsers.length }}</strong></div>
+        <div class="summary-tile"><span>Reporting links</span><strong>{{ validHierarchyRows.length }}</strong></div>
+        <div class="summary-tile"><span>Tree roots</span><strong>{{ hierarchyTree.length }}</strong></div>
+        <div class="summary-tile" :class="hierarchyIssues.length ? 'attention' : 'ok'">
+          <span>Mapping issues</span><strong>{{ hierarchyIssues.length }}</strong>
+        </div>
+      </div>
+
+      <div v-if="visibleTreeRows.length" class="tree-panel" id="hierarchy-print-area">
+        <div
+          v-for="row in visibleTreeRows"
+          :key="row.user.id + '-' + row.depth"
+          class="tree-row"
+          :class="{ leaf: !row.hasChildren }"
+          :style="{ paddingLeft: (row.depth * 22 + 10) + 'px' }"
+        >
+          <button
+            class="tree-toggle"
+            type="button"
+            :disabled="!row.hasChildren"
+            @click="toggleNode(row.user.id)"
+            :aria-label="isExpanded(row.user.id) ? 'Collapse node' : 'Expand node'"
+          >
+            <span v-if="row.hasChildren">{{ isExpanded(row.user.id) ? '−' : '+' }}</span>
+            <span v-else>•</span>
+          </button>
+
+          <div class="tree-user-card">
+            <div class="tree-user-main">
+              <strong>{{ row.user.name }}</strong>
+              <span>{{ row.user.username }} · {{ row.user.emp_number || 'No emp no' }}</span>
+            </div>
+            <div class="tree-user-meta">
+              <span class="badge blue">{{ roleLabel(row.user.role) }}</span>
+              <span class="badge" :class="userScopeCount(row.user.id) ? 'green' : 'amber'">
+                {{ userScopeCount(row.user.id) }} scope
+              </span>
+              <span v-if="row.hasChildren" class="badge">{{ row.childrenCount }} child</span>
+            </div>
+            <div class="tree-row-actions">
+              <button v-if="isSupervisorRole(row.user.role)" class="btn btn-muted tiny-btn" type="button" @click="mapChildren(row.user)">Map children</button>
+              <button class="btn btn-muted tiny-btn" type="button" @click="editScope(row.user)">Scope</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-else class="empty-tree">
+        No hierarchy tree is available yet. Start by mapping GM/DGM/LM/SM users in the reporting hierarchy editor.
+      </div>
+    </section>
+
+    <section class="card section-gap" v-if="!loading && !loadError">
       <div class="card-title">
         <div>
-          <h2>Current hierarchy</h2>
-          <p class="muted small-text">Active reporting links currently used by backend scope checks.</p>
+          <h2>Users not mapped or mapped incorrectly</h2>
+          <p class="muted small-text">These checks help you find users who may not appear correctly in dashboards, review queues, or station/line scope.</p>
         </div>
-        <button class="btn btn-muted" @click="load">Refresh</button>
+        <span class="badge" :class="hierarchyIssues.length ? 'amber' : 'green'">{{ hierarchyIssues.length ? `${hierarchyIssues.length} issue(s)` : 'All clear' }}</span>
       </div>
-      <div class="table-wrap">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>Supervisor</th>
-              <th>Role</th>
-              <th>Subordinate</th>
-              <th>Role</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="link in hierarchyRows" :key="link.id">
-              <td>{{ link.supervisor?.name || '-' }}</td>
-              <td><span class="badge blue">{{ roleLabel(link.supervisor?.role) }}</span></td>
-              <td>{{ link.subordinate?.name || '-' }}</td>
-              <td><span class="badge">{{ roleLabel(link.subordinate?.role) }}</span></td>
-            </tr>
-            <tr v-if="!hierarchyRows.length">
-              <td colspan="4" class="muted">No hierarchy mapped yet.</td>
-            </tr>
-          </tbody>
-        </table>
+
+      <div v-if="hierarchyIssues.length" class="issue-grid">
+        <article v-for="issue in hierarchyIssues" :key="issue.key" class="issue-card">
+          <div class="issue-top">
+            <strong>{{ issue.user.name }}</strong>
+            <span class="badge" :class="issue.severity === 'high' ? 'red' : 'amber'">{{ issue.type }}</span>
+          </div>
+          <p>{{ issue.message }}</p>
+          <div class="issue-meta">
+            <span>{{ issue.user.username }}</span>
+            <span>{{ roleLabel(issue.user.role) }}</span>
+          </div>
+          <div class="issue-actions">
+            <button v-if="issue.action === 'hierarchy'" class="btn btn-primary tiny-btn" type="button" @click="prepareMappingForIssue(issue)">Fix hierarchy</button>
+            <button v-if="issue.action === 'scope'" class="btn btn-primary tiny-btn" type="button" @click="editScope(issue.user)">Fix scope</button>
+          </div>
+        </article>
+      </div>
+
+      <div v-else class="empty-tree ok-empty">
+        No missing or incorrect mapping detected from the current hierarchy and scope data.
       </div>
     </section>
 
@@ -326,11 +391,12 @@ const savingAccess = ref(false)
 const selectedSupervisorId = ref(0)
 const selectedSubordinateIds = ref([])
 const savingHierarchy = ref(false)
+const expandedNodeIds = ref(new Set())
 
-const userById = computed(() => Object.fromEntries(users.value.map((u) => [u.id, u])))
+const userById = computed(() => Object.fromEntries(users.value.map((u) => [Number(u.id), u])))
 const activeUsers = computed(() => users.value.filter((u) => u.is_active))
-const selectedAccessUser = computed(() => userById.value[selectedAccessUserId.value])
-const selectedSupervisor = computed(() => userById.value[selectedSupervisorId.value])
+const selectedAccessUser = computed(() => userById.value[Number(selectedAccessUserId.value)])
+const selectedSupervisor = computed(() => userById.value[Number(selectedSupervisorId.value)])
 
 const filteredUsers = computed(() => {
   const q = userSearch.value.toLowerCase()
@@ -340,28 +406,137 @@ const filteredUsers = computed(() => {
     .some((value) => String(value).toLowerCase().includes(q)))
 })
 
-const supervisorUsers = computed(() => activeUsers.value.filter((u) => ['AM_MGR_LINE', 'AM_MGR_HK', 'DGM_LINE', 'DGM_HK', 'GM_OPS', 'SUPER_ADMIN', 'HK_CELL_ADMIN'].includes(u.role)))
+const supervisorUsers = computed(() => activeUsers.value.filter((u) => isSupervisorRole(u.role)))
 
 const subordinateCandidates = computed(() => {
   const supervisor = selectedSupervisor.value
   if (!supervisor) return []
   return activeUsers.value.filter((u) => {
-    if (u.id === supervisor.id) return false
+    if (Number(u.id) === Number(supervisor.id)) return false
     if (isLm(supervisor.role)) return ['STATION_MANAGER', 'EIT_MEMBER'].includes(u.role)
     if (isDgm(supervisor.role)) return ['AM_MGR_LINE', 'AM_MGR_HK'].includes(u.role)
     if (supervisor.role === 'GM_OPS') return ['DGM_LINE', 'DGM_HK'].includes(u.role)
+    if (['SUPER_ADMIN', 'HK_CELL_ADMIN'].includes(supervisor.role)) return ['GM_OPS', 'DGM_LINE', 'DGM_HK', 'AM_MGR_LINE', 'AM_MGR_HK'].includes(u.role)
     return true
   })
 })
 
-const hierarchyRows = computed(() => reportingLinks.value.map((link) => ({
+const validHierarchyRows = computed(() => reportingLinks.value.map((link) => ({
   ...link,
-  supervisor: userById.value[link.supervisor_user_id],
-  subordinate: userById.value[link.subordinate_user_id]
-})))
+  supervisor_user_id: Number(link.supervisor_user_id),
+  subordinate_user_id: Number(link.subordinate_user_id),
+  supervisor: userById.value[Number(link.supervisor_user_id)],
+  subordinate: userById.value[Number(link.subordinate_user_id)]
+})).filter((link) => link.supervisor && link.subordinate && link.supervisor.is_active && link.subordinate.is_active))
+
+const childMap = computed(() => {
+  const map = new Map()
+  for (const link of validHierarchyRows.value) {
+    const list = map.get(link.supervisor_user_id) || []
+    list.push(link.subordinate)
+    map.set(link.supervisor_user_id, list)
+  }
+  for (const [key, list] of map.entries()) {
+    map.set(key, sortUsersForTree(list))
+  }
+  return map
+})
+
+const parentMap = computed(() => {
+  const map = new Map()
+  for (const link of validHierarchyRows.value) {
+    const list = map.get(link.subordinate_user_id) || []
+    list.push(link.supervisor)
+    map.set(link.subordinate_user_id, list)
+  }
+  return map
+})
+
+const hierarchyTree = computed(() => {
+  const roots = activeUsers.value.filter((u) => !parentMap.value.has(Number(u.id)) && isTreeRootRole(u.role))
+  const fallbackRoots = roots.length ? roots : activeUsers.value.filter((u) => isSupervisorRole(u.role))
+  return sortUsersForTree(fallbackRoots).map((user) => makeTreeNode(user, 0, []))
+})
+
+const visibleTreeRows = computed(() => {
+  const rows = []
+  for (const node of hierarchyTree.value) appendVisibleNode(node, rows)
+  return rows
+})
+
+const hierarchyIssues = computed(() => {
+  const issues = []
+
+  for (const user of activeUsers.value) {
+    const parents = parentMap.value.get(Number(user.id)) || []
+    const expectedParentRoles = expectedParentsForRole(user.role)
+    const scopeCount = userScopeCount(user.id)
+
+    if (expectedParentRoles.length && parents.length === 0) {
+      issues.push({
+        key: `missing-parent-${user.id}`,
+        user,
+        type: 'Missing supervisor',
+        severity: 'high',
+        action: 'hierarchy',
+        message: `${roleLabel(user.role)} should be placed under ${expectedParentRoles.map(roleLabel).join(' / ')}.`
+      })
+    }
+
+    if (parents.length > 1) {
+      issues.push({
+        key: `multi-parent-${user.id}`,
+        user,
+        type: 'Multiple supervisors',
+        severity: 'high',
+        action: 'hierarchy',
+        message: `This user is mapped under ${parents.length} supervisors. Keep only the correct reporting supervisor.`
+      })
+    }
+
+    if (expectedParentRoles.length && parents.length === 1 && !expectedParentRoles.includes(parents[0].role)) {
+      issues.push({
+        key: `wrong-parent-${user.id}`,
+        user,
+        type: 'Wrong supervisor role',
+        severity: 'high',
+        action: 'hierarchy',
+        message: `Mapped under ${roleLabel(parents[0].role)}, but expected ${expectedParentRoles.map(roleLabel).join(' / ')}.`
+      })
+    }
+
+    if (needsScope(user.role) && scopeCount === 0) {
+      issues.push({
+        key: `missing-scope-${user.id}`,
+        user,
+        type: 'Missing station/line scope',
+        severity: 'medium',
+        action: 'scope',
+        message: 'This user has no station or line access. They may not see inspections or stations correctly.'
+      })
+    }
+  }
+
+  for (const supervisor of supervisorUsers.value) {
+    if (['GM_OPS', 'DGM_LINE', 'DGM_HK', 'AM_MGR_LINE', 'AM_MGR_HK'].includes(supervisor.role)) {
+      const children = childMap.value.get(Number(supervisor.id)) || []
+      if (!children.length) {
+        issues.push({
+          key: `no-children-${supervisor.id}`,
+          user: supervisor,
+          type: 'No child users',
+          severity: 'medium',
+          action: 'hierarchy',
+          message: `${roleLabel(supervisor.role)} has no subordinate users mapped.`
+        })
+      }
+    }
+  }
+
+  return issues
+})
 
 const userFormErrors = computed(() => validateUserForm())
-
 const canSaveUser = computed(() => Object.keys(userFormErrors.value).length === 0)
 
 function defaultUserForm() {
@@ -415,12 +590,131 @@ function roleLabel(role) {
   return labels[role] || role || '-'
 }
 
+function roleRank(role) {
+  const ranks = {
+    SUPER_ADMIN: 1,
+    HK_CELL_ADMIN: 2,
+    GM_OPS: 3,
+    DGM_LINE: 4,
+    DGM_HK: 5,
+    AM_MGR_LINE: 6,
+    AM_MGR_HK: 7,
+    STATION_MANAGER: 8,
+    EIT_MEMBER: 9,
+    AUDITOR: 10
+  }
+  return ranks[role] || 99
+}
+
+function sortUsersForTree(list) {
+  return [...list].sort((a, b) => roleRank(a.role) - roleRank(b.role) || String(a.name || '').localeCompare(String(b.name || '')))
+}
+
 function isLm(role) {
   return ['AM_MGR_LINE', 'AM_MGR_HK'].includes(role)
 }
 
 function isDgm(role) {
   return ['DGM_LINE', 'DGM_HK'].includes(role)
+}
+
+function isSupervisorRole(role) {
+  return ['SUPER_ADMIN', 'HK_CELL_ADMIN', 'GM_OPS', 'DGM_LINE', 'DGM_HK', 'AM_MGR_LINE', 'AM_MGR_HK'].includes(role)
+}
+
+function isTreeRootRole(role) {
+  return ['SUPER_ADMIN', 'HK_CELL_ADMIN', 'GM_OPS', 'DGM_LINE', 'DGM_HK', 'AM_MGR_LINE', 'AM_MGR_HK'].includes(role)
+}
+
+function expectedParentsForRole(role) {
+  const map = {
+    DGM_LINE: ['GM_OPS'],
+    DGM_HK: ['GM_OPS'],
+    AM_MGR_LINE: ['DGM_LINE', 'DGM_HK'],
+    AM_MGR_HK: ['DGM_LINE', 'DGM_HK'],
+    STATION_MANAGER: ['AM_MGR_LINE', 'AM_MGR_HK'],
+    EIT_MEMBER: ['AM_MGR_LINE', 'AM_MGR_HK']
+  }
+  return map[role] || []
+}
+
+function needsScope(role) {
+  return ['STATION_MANAGER', 'EIT_MEMBER', 'AM_MGR_LINE', 'AM_MGR_HK'].includes(role)
+}
+
+function userScopeCount(userId) {
+  const id = Number(userId)
+  const stationCount = stationAccess.value.filter((row) => Number(row.user_id) === id).length
+  const lineCount = lineAccess.value.filter((row) => Number(row.user_id) === id).length
+  return stationCount + lineCount
+}
+
+function makeTreeNode(user, depth, trail) {
+  const id = Number(user.id)
+  if (trail.includes(id)) {
+    return { user, depth, children: [], hasCycle: true }
+  }
+  const children = (childMap.value.get(id) || []).map((child) => makeTreeNode(child, depth + 1, [...trail, id]))
+  return { user, depth, children, hasCycle: false }
+}
+
+function appendVisibleNode(node, rows) {
+  rows.push({
+    user: node.user,
+    depth: node.depth,
+    hasChildren: node.children.length > 0,
+    childrenCount: node.children.length
+  })
+  if (node.children.length && isExpanded(node.user.id)) {
+    for (const child of node.children) appendVisibleNode(child, rows)
+  }
+}
+
+function isExpanded(id) {
+  return expandedNodeIds.value.has(Number(id))
+}
+
+function toggleNode(id) {
+  const next = new Set(expandedNodeIds.value)
+  const numericId = Number(id)
+  if (next.has(numericId)) next.delete(numericId)
+  else next.add(numericId)
+  expandedNodeIds.value = next
+}
+
+function expandAll() {
+  expandedNodeIds.value = new Set(activeUsers.value.map((u) => Number(u.id)))
+}
+
+function collapseAll() {
+  expandedNodeIds.value = new Set()
+}
+
+function mapChildren(user) {
+  selectedSupervisorId.value = Number(user.id)
+  selectedSubordinateIds.value = reportingLinks.value
+    .filter((row) => Number(row.supervisor_user_id) === Number(user.id))
+    .map((row) => Number(row.subordinate_user_id))
+  scrollToId('hierarchy-editor')
+}
+
+function editScope(user) {
+  selectedAccessUserId.value = Number(user.id)
+  selectedStationIds.value = stationAccess.value.filter((row) => Number(row.user_id) === Number(user.id)).map((row) => Number(row.station_id))
+  selectedLineIds.value = lineAccess.value.filter((row) => Number(row.user_id) === Number(user.id)).map((row) => Number(row.line_id))
+  scrollToId('scope-editor')
+}
+
+function prepareMappingForIssue(issue) {
+  const parents = parentMap.value.get(Number(issue.user.id)) || []
+  if (parents.length === 1) mapChildren(parents[0])
+  else scrollToId('hierarchy-editor')
+}
+
+function scrollToId(id) {
+  window.requestAnimationFrame(() => {
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
 }
 
 function fieldLabel(field) {
@@ -497,6 +791,7 @@ async function load() {
     stationAccess.value = bootstrap.station_access || []
     lineAccess.value = bootstrap.line_access || []
     reportingLinks.value = bootstrap.reporting_links || []
+    expandAll()
   } catch (e) {
     const message = formatApiError(e, 'Unable to load access-control data. Only Admin/HK Cell can manage users and mappings.')
     error.value = message
@@ -520,7 +815,7 @@ function resetUserForm() {
 function editUser(user) {
   clearMessages()
   submittedUserForm.value = false
-  editingUserId.value = user.id
+  editingUserId.value = Number(user.id)
   userForm.value = {
     emp_number: user.emp_number || '',
     name: user.name || '',
@@ -602,12 +897,12 @@ async function toggleUserStatus(user) {
 }
 
 watch(selectedAccessUserId, (id) => {
-  selectedStationIds.value = stationAccess.value.filter((row) => row.user_id === id).map((row) => row.station_id)
-  selectedLineIds.value = lineAccess.value.filter((row) => row.user_id === id).map((row) => row.line_id)
+  selectedStationIds.value = stationAccess.value.filter((row) => Number(row.user_id) === Number(id)).map((row) => Number(row.station_id))
+  selectedLineIds.value = lineAccess.value.filter((row) => Number(row.user_id) === Number(id)).map((row) => Number(row.line_id))
 })
 
 watch(selectedSupervisorId, (id) => {
-  selectedSubordinateIds.value = reportingLinks.value.filter((row) => row.supervisor_user_id === id).map((row) => row.subordinate_user_id)
+  selectedSubordinateIds.value = reportingLinks.value.filter((row) => Number(row.supervisor_user_id) === Number(id)).map((row) => Number(row.subordinate_user_id))
 })
 
 async function saveAccess() {
@@ -615,11 +910,11 @@ async function saveAccess() {
   clearMessages()
   try {
     await api.put('/access-control/station-access', {
-      user_id: selectedAccessUserId.value,
+      user_id: Number(selectedAccessUserId.value),
       station_ids: selectedStationIds.value.map(Number)
     })
     await api.put('/access-control/line-access', {
-      user_id: selectedAccessUserId.value,
+      user_id: Number(selectedAccessUserId.value),
       line_ids: selectedLineIds.value.map(Number)
     })
     success.value = 'Station/line access saved.'
@@ -636,7 +931,7 @@ async function saveHierarchy() {
   clearMessages()
   try {
     await api.put('/access-control/reporting-links', {
-      supervisor_user_id: selectedSupervisorId.value,
+      supervisor_user_id: Number(selectedSupervisorId.value),
       subordinate_user_ids: selectedSubordinateIds.value.map(Number),
       relation_type: 'REPORTING'
     })
@@ -647,6 +942,68 @@ async function saveHierarchy() {
   } finally {
     savingHierarchy.value = false
   }
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;')
+}
+
+function printableTreeLines() {
+  const allRows = []
+  const walk = (node) => {
+    allRows.push(node)
+    for (const child of node.children) walk(child)
+  }
+  for (const root of hierarchyTree.value) walk(root)
+  return allRows.map((node) => {
+    const indent = '&nbsp;'.repeat(node.depth * 6)
+    return `<div class="line">${indent}<strong>${escapeHtml(node.user.name)}</strong> <span>${escapeHtml(roleLabel(node.user.role))}</span> <small>${escapeHtml(node.user.username || '')}</small></div>`
+  }).join('')
+}
+
+function downloadHierarchyPdf() {
+  const printWindow = window.open('', '_blank', 'width=1024,height=768')
+  if (!printWindow) {
+    window.print()
+    return
+  }
+  const html = `<!doctype html>
+<html>
+<head>
+  <title>Access Control Hierarchy</title>
+  <style>
+    body { font-family: Arial, sans-serif; color: #0f172a; margin: 28px; }
+    h1 { margin-bottom: 6px; color: #092b6f; }
+    .muted { color: #64748b; margin-bottom: 20px; }
+    .line { border-bottom: 1px solid #e2e8f0; padding: 9px 0; font-size: 13px; }
+    .line span { display: inline-block; margin-left: 10px; color: #1e40af; font-weight: 700; }
+    .line small { display: inline-block; margin-left: 10px; color: #64748b; }
+    .issues { margin-top: 24px; page-break-inside: avoid; }
+    .issue { border: 1px solid #fecaca; border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
+    @media print { button { display: none; } }
+  </style>
+</head>
+<body>
+  <button onclick="window.print()">Print / Save as PDF</button>
+  <h1>Access Control Reporting Hierarchy</h1>
+  <div class="muted">Generated from current access-control mapping.</div>
+  ${printableTreeLines() || '<p>No hierarchy mapped yet.</p>'}
+  <div class="issues">
+    <h2>Mapping issues</h2>
+    ${hierarchyIssues.value.length ? hierarchyIssues.value.map((issue) => `<div class="issue"><strong>${escapeHtml(issue.user.name)}</strong> — ${escapeHtml(issue.type)}<br>${escapeHtml(issue.message)}</div>`).join('') : '<p>No mapping issues detected.</p>'}
+  </div>
+</body>
+</html>`
+  printWindow.document.open()
+  printWindow.document.write(html)
+  printWindow.document.close()
+  printWindow.focus()
+  window.setTimeout(() => printWindow.print(), 300)
 }
 
 onMounted(load)
@@ -724,15 +1081,115 @@ onMounted(load)
 .tiny-btn { padding: 7px 9px; font-size: 12px; }
 .badge.green { background: #dcfce7; color: #166534; }
 .badge.red { background: #fee2e2; color: #991b1b; }
+.badge.amber { background: #fef3c7; color: #92400e; }
+.tree-title-row { align-items: flex-start; }
+.tree-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.hierarchy-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.summary-tile {
+  border: 1px solid #e2e8f0;
+  background: #f8fbff;
+  border-radius: 16px;
+  padding: 12px;
+}
+.summary-tile span { display: block; color: #64748b; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.summary-tile strong { display: block; margin-top: 5px; font-size: 24px; color: #0f172a; }
+.summary-tile.attention { border-color: #fcd34d; background: #fffbeb; }
+.summary-tile.ok { border-color: #bbf7d0; background: #f0fdf4; }
+.tree-panel {
+  border: 1px solid #dbe3f0;
+  border-radius: 18px;
+  background: #fbfdff;
+  overflow: auto;
+}
+.tree-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  border-bottom: 1px solid #e8eef7;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  padding-right: 10px;
+}
+.tree-row:last-child { border-bottom: 0; }
+.tree-toggle {
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: white;
+  color: #0f3f8f;
+  font-weight: 900;
+  margin-top: 8px;
+}
+.tree-toggle:disabled { color: #94a3b8; background: #f8fafc; }
+.tree-user-card {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) minmax(160px, .9fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  background: white;
+  padding: 10px 12px;
+}
+.tree-user-main { min-width: 0; }
+.tree-user-main strong { display: block; color: #0f172a; overflow-wrap: anywhere; }
+.tree-user-main span { display: block; color: #64748b; font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
+.tree-user-meta,
+.tree-row-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; }
+.empty-tree {
+  border: 1px dashed #cbd5e1;
+  border-radius: 16px;
+  padding: 18px;
+  background: #f8fafc;
+  color: #64748b;
+  font-weight: 700;
+}
+.ok-empty { border-color: #bbf7d0; background: #f0fdf4; color: #166534; }
+.issue-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.issue-card {
+  border: 1px solid #fde68a;
+  background: #fffbeb;
+  border-radius: 16px;
+  padding: 12px;
+}
+.issue-top,
+.issue-meta,
+.issue-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+.issue-card p { margin: 8px 0; color: #78350f; line-height: 1.45; }
+.issue-meta { color: #64748b; font-size: 12px; justify-content: flex-start; }
 .info-card { background: linear-gradient(135deg, #f8fbff, #ffffff); }
 .info-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .info-grid div { border: 1px solid #e2e8f0; border-radius: 16px; padding: 12px; background: white; }
 .info-grid strong { display: block; margin-bottom: 6px; color: #0f3f8f; }
 .info-grid span { color: #475569; font-size: 13px; line-height: 1.5; }
+@media (max-width: 1100px) {
+  .tree-user-card { grid-template-columns: 1fr; }
+  .tree-user-meta,
+  .tree-row-actions { justify-content: flex-start; }
+  .hierarchy-summary-grid,
+  .issue-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (max-width: 900px) {
   .info-grid,
-  .form-grid { grid-template-columns: 1fr; }
+  .form-grid,
+  .hierarchy-summary-grid,
+  .issue-grid { grid-template-columns: 1fr; }
   .toggle-row { padding-top: 0; }
   .action-cell { flex-direction: column; }
+  .tree-actions { justify-content: stretch; }
+  .tree-actions .btn { flex: 1 1 auto; }
 }
 </style>
