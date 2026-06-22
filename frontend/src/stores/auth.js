@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { api, setTokens, clearTokens } from '../services/api'
+import { api, clearTokens, getRefreshToken, revokeRefreshToken, setTokens } from '../services/api'
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({ user: null, loading: false }),
@@ -20,8 +20,12 @@ export const useAuthStore = defineStore('auth', {
       this.user = data
     },
     logout() {
+      const refreshToken = getRefreshToken()
       clearTokens()
       this.user = null
+      if (refreshToken) {
+        revokeRefreshToken(refreshToken).catch(() => {})
+      }
     }
   }
 })

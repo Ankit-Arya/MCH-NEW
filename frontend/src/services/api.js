@@ -4,11 +4,71 @@ export const api = axios.create({
   baseURL: '/api/v1'
 })
 
+const refreshClient = axios.create({
+  baseURL: '/api/v1'
+})
+
+let refreshPromise = null
+
+function redirectToLogin() {
+  if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+    window.location.assign('/login')
+  }
+}
+
+function isAuthRefreshSkipped(config = {}) {
+  const url = String(config.url || '')
+  return Boolean(config.skipAuthRefresh)
+    || url.includes('/auth/login')
+    || url.includes('/auth/refresh')
+    || url.includes('/auth/logout')
+}
+
+export function getAccessToken() {
+  return localStorage.getItem('access_token')
+}
+
+export function getRefreshToken() {
+  return localStorage.getItem('refresh_token')
+}
+
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('access_token')
+  const token = getAccessToken()
   if (token) config.headers.Authorization = `Bearer ${token}`
   return config
 })
+
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const original = error.config || {}
+    const status = error.response?.status
+
+    if (status !== 401 || original._retry || isAuthRefreshSkipped(original)) {
+      throw error
+    }
+
+    const refreshToken = getRefreshToken()
+    if (!refreshToken) {
+      clearTokens()
+      redirectToLogin()
+      throw error
+    }
+
+    original._retry = true
+
+    try {
+      await refreshTokens()
+      original.headers = original.headers || {}
+      original.headers.Authorization = `Bearer ${getAccessToken()}`
+      return api(original)
+    } catch (refreshError) {
+      clearTokens()
+      redirectToLogin()
+      throw refreshError
+    }
+  }
+)
 
 export function setTokens(data) {
   localStorage.setItem('access_token', data.access_token)
@@ -18,6 +78,30 @@ export function setTokens(data) {
 export function clearTokens() {
   localStorage.removeItem('access_token')
   localStorage.removeItem('refresh_token')
+}
+
+export async function refreshTokens() {
+  const refreshToken = getRefreshToken()
+  if (!refreshToken) throw new Error('Refresh token is missing')
+
+  if (!refreshPromise) {
+    refreshPromise = refreshClient
+      .post('/auth/refresh', { refresh_token: refreshToken })
+      .then(({ data }) => {
+        setTokens(data)
+        return data
+      })
+      .finally(() => {
+        refreshPromise = null
+      })
+  }
+
+  return refreshPromise
+}
+
+export async function revokeRefreshToken(refreshToken) {
+  if (!refreshToken) return
+  await refreshClient.post('/auth/logout', { refresh_token: refreshToken })
 }
 
 export async function getPdfBlobUrl(url, params = {}) {
