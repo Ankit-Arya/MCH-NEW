@@ -1,25 +1,42 @@
 from datetime import date
 from io import BytesIO
+import hashlib
+import hmac
+import time
 from pathlib import Path
 from xml.sax.saxutils import escape
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response, StreamingResponse
+from reportlab.graphics import renderPDF
 from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.graphics import renderPDF
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import Image as PlatypusImage
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.core.permissions import apply_inspection_scope, require_inspection_access
-from app.models.all_models import Inspection, InspectionEntry, InspectionMedia, InspectionStatus, InspectionType, MediaType, User
-from app.services.media_service import download_bytes, get_external_object_url
+from app.models.all_models import (
+    Inspection,
+    InspectionEntry,
+    InspectionMedia,
+    InspectionReview,
+    InspectionStatus,
+    InspectionType,
+    MediaType,
+    User,
+)
+from app.services.media_service import download_bytes
+
 router = APIRouter()
+
+EVIDENCE_LINK_TTL_SECONDS = 7 * 24 * 60 * 60
 
 REPORT_PRIMARY = colors.white
 REPORT_PRIMARY_DARK = colors.black
@@ -183,6 +200,61 @@ def _p(value, style) -> Paragraph:
     return Paragraph("<br/>".join(_safe_text(line) for line in lines), style)
 
 
+def _evidence_signature(media_id: int, expires_at: int) -> str:
+    message = f"{media_id}:{expires_at}".encode("utf-8")
+    secret = settings.SECRET_KEY.encode("utf-8")
+    return hmac.new(secret, message, hashlib.sha256).hexdigest()
+
+
+def _create_evidence_token(media_id: int) -> str:
+    expires_at = int(time.time()) + EVIDENCE_LINK_TTL_SECONDS
+    signature = _evidence_signature(media_id, expires_at)
+    return f"{expires_at}.{signature}"
+
+
+def _verify_evidence_token(media_id: int, token: str) -> None:
+    try:
+        expires_raw, signature = token.split(".", 1)
+        expires_at = int(expires_raw)
+    except Exception:
+        raise HTTPException(status_code=403, detail="Invalid evidence link")
+
+    if expires_at < int(time.time()):
+        raise HTTPException(status_code=403, detail="Evidence link has expired")
+
+    expected_signature = _evidence_signature(media_id, expires_at)
+    if not hmac.compare_digest(signature, expected_signature):
+        raise HTTPException(status_code=403, detail="Invalid evidence link")
+
+
+def _public_app_base_url(request: Request) -> str:
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+    forwarded_host = request.headers.get("x-forwarded-host")
+    host = forwarded_host or request.headers.get("host")
+    proto = forwarded_proto or request.url.scheme
+
+    if host and not host.startswith(("api", "mch_api")):
+        return f"{proto}://{host}".rstrip("/")
+
+    configured_origin = (settings.FRONTEND_ORIGIN or "").strip().rstrip("/")
+    if configured_origin:
+        return configured_origin
+
+    return str(request.base_url).rstrip("/")
+
+
+def _evidence_url(request: Request, media: InspectionMedia) -> str:
+    base_url = _public_app_base_url(request)
+    api_prefix = settings.API_PREFIX.rstrip("/")
+    token = _create_evidence_token(media.id)
+    return f"{base_url}{api_prefix}/reports/evidence/{media.id}?token={token}"
+
+
+def _inline_filename(filename: str | None, fallback: str = "evidence") -> str:
+    safe = (filename or fallback).replace("\\", "_").replace("/", "_").replace('"', "")
+    return safe or fallback
+
+
 def _brand_badge(primary_text: str, secondary_text: str, styles) -> Table:
     badge = Table(
         [[Paragraph(primary_text, styles["HeaderBadge"])], [Paragraph(secondary_text, styles["HeaderBadgeSub"])]],
@@ -230,9 +302,7 @@ def _build_report_header(styles, title: str, subtitle: str | None = None) -> Tab
     header = Table(
         [[
             _build_dmrc_logo(styles),
-            [
-                Paragraph(title_markup, styles["HeaderTitle"])
-            ],
+            [Paragraph(title_markup, styles["HeaderTitle"])],
         ]],
         colWidths=[120, 415],
         hAlign="CENTER",
@@ -279,20 +349,10 @@ def _build_metadata_table(inspection: Inspection, styles) -> Table:
         ],
         [
             Paragraph("Status", styles["MetaLabel"]),
-            # Paragraph(_safe_text(inspection.status.value), styles["MetaValue"]),
             Paragraph(_safe_text(_status_label(inspection.status.value)), styles["MetaValue"]),
             Paragraph("Inspection Score", styles["MetaLabel"]),
             Paragraph(f"<b>{_inspection_score(inspection)}%</b>", styles["MetaValue"]),
         ],
-        # [
-        #     Paragraph("Header GPS", styles["MetaLabel"]),
-        #     Paragraph(
-        #         _safe_text(f"{inspection.latitude or '-'}, {inspection.longitude or '-'}"),
-        #         styles["MetaValue"],
-        #     ),
-        #     Paragraph("", styles["MetaLabel"]),
-        #     Paragraph("", styles["MetaValue"]),
-        # ],
     ]
     table = Table(metadata, colWidths=[78, 190, 78, 189])
     table.setStyle(TableStyle([
@@ -342,8 +402,22 @@ def _draw_pdf_footer(canvas, doc):
     canvas.restoreState()
 
 
-def _query_inspections(db: Session, user: User, from_date=None, to_date=None, station_id=None, contract_id=None, submitted_by=None, inspection_type=None, status=None):
-    q = apply_inspection_scope(db.query(Inspection).order_by(Inspection.inspection_date.desc(), Inspection.id.desc()), db, user)
+def _query_inspections(
+    db: Session,
+    user: User,
+    from_date=None,
+    to_date=None,
+    station_id=None,
+    contract_id=None,
+    submitted_by=None,
+    inspection_type=None,
+    status=None,
+):
+    q = apply_inspection_scope(
+        db.query(Inspection).order_by(Inspection.inspection_date.desc(), Inspection.id.desc()),
+        db,
+        user,
+    )
     if from_date:
         q = q.filter(Inspection.inspection_date >= from_date)
     if to_date:
@@ -416,13 +490,6 @@ def _media_counts(db: Session, entry_id: int) -> tuple[int, int]:
     videos = sum(1 for item in media if item.media_type == MediaType.VIDEO)
     return photos, videos
 
-# This is a helper function which returns a Platypus Image object scaled to fit the bounding box   
-# 
-# Args:
-#         image_bytes: Raw image data in bytes.
-#         max_width: Maximum allowed width in points.
-#         max_height: Maximum allowed height in points.
-
 
 def _build_thumbnail_flowable(image_bytes: bytes, max_width: int = 150, max_height: int = 110) -> PlatypusImage:
     image_buffer = BytesIO(image_bytes)
@@ -434,10 +501,9 @@ def _build_thumbnail_flowable(image_bytes: bytes, max_width: int = 150, max_heig
     thumbnail = PlatypusImage(image_buffer, width=thumb_width, height=thumb_height)
     thumbnail.hAlign = "CENTER"
     return thumbnail
- 
 
-# def _build_photo_preview_table(inspection: Inspection, styles):
-def _build_photo_preview_table(inspection: Inspection, styles):
+
+def _build_photo_preview_table(inspection: Inspection, styles, request: Request):
     photo_media = [
         media for media in (inspection.media or [])
         if not media.is_deleted
@@ -454,13 +520,17 @@ def _build_photo_preview_table(inspection: Inspection, styles):
     for media in photo_media:
         try:
             thumbnail = _build_thumbnail_flowable(download_bytes(media.object_path))
+            image_url = _evidence_url(request, media)
             label = media.sub_area.name if media.sub_area else media.original_file_name
             safe_label = escape(label or "Photo")
+            safe_href = escape(image_url, {'"': "&quot;"})
 
             cells.append([
                 thumbnail,
                 Spacer(1, 4),
-                Paragraph(safe_label, styles["BodyText"]),
+                Paragraph(f"<b>{safe_label}</b>", styles["BodyText"]),
+                Spacer(1, 2),
+                Paragraph(f'<link href="{safe_href}">Open full-resolution image</link>', styles["BodyText"]),
             ])
         except Exception:
             unavailable_count += 1
@@ -493,8 +563,8 @@ def _build_photo_preview_table(inspection: Inspection, styles):
 
     return story
 
-# Provide evidence video URL from minio in the downloaded PDF
-def _build_video_link_section(inspection: Inspection, styles):
+
+def _build_video_link_section(inspection: Inspection, styles, request: Request):
     video_media = [
         media for media in (inspection.media or [])
         if not media.is_deleted and media.media_type == MediaType.VIDEO
@@ -507,15 +577,13 @@ def _build_video_link_section(inspection: Inspection, styles):
 
     for index, media in enumerate(video_media, start=1):
         try:
-            video_url = get_external_object_url(media.object_path)
+            video_url = _evidence_url(request, media)
             label = media.sub_area.name if media.sub_area else media.original_file_name
             safe_label = escape(label or f"Video {index}")
             safe_href = escape(video_url, {'"': "&quot;"})
-            safe_link_text = escape(video_url)
 
             story.append(
                 Paragraph(
-                    # f'{index}. <b>{safe_label}</b><br/><link href="{safe_href}">{safe_link_text}</link>',
                     f'{index}. <link href="{safe_href}">{safe_label}</link>',
                     styles["BodyText"],
                 )
@@ -540,6 +608,87 @@ def _build_video_link_section(inspection: Inspection, styles):
     return story
 
 
+
+def _review_action_label(action_value: str | None) -> str:
+    labels = {
+        "COMMENT": "Comment",
+        "RETURN_FOR_CLARIFICATION": "Returned for clarification",
+        "RECOMMEND_PENALTY": "Forwarded / recommended",
+        "APPROVE": "Approved",
+        "REJECT": "Rejected",
+        "SEND_TO_GM": "Forwarded to GM/Ops",
+        "GM_REVIEW": "Reviewed by GM/Ops",
+    }
+    return labels.get(action_value or "", str(action_value or "-").replace("_", " ").title())
+
+
+def _review_level_label(level: str | None) -> str:
+    labels = {
+        "LINE_MANAGER": "Line Manager",
+        "DGM": "DGM",
+        "GM": "GM/Ops",
+    }
+    return labels.get(level or "", str(level or "-").replace("_", " ").title())
+
+
+def _format_review_datetime(value) -> str:
+    return value.strftime("%d-%m-%Y %H:%M") if value else "-"
+
+
+def _build_approval_remarks_table(db: Session, inspection: Inspection, styles):
+    """Build the hierarchy approval / forwarding remarks trail for the inspection PDF."""
+    reviews = (
+        db.query(InspectionReview)
+        .filter(InspectionReview.inspection_id == inspection.id)
+        .order_by(InspectionReview.reviewed_at.asc(), InspectionReview.id.asc())
+        .all()
+    )
+
+    if not reviews:
+        return []
+
+    data = [[
+        Paragraph("Level", styles["TableHeader"]),
+        Paragraph("Action", styles["TableHeader"]),
+        Paragraph("By", styles["TableHeader"]),
+        Paragraph("When", styles["TableHeader"]),
+        Paragraph("Remarks", styles["TableHeader"]),
+    ]]
+
+    for review in reviews:
+        action_value = review.action.value if getattr(review.action, "value", None) else str(review.action or "")
+        reviewer_name = review.reviewer.name if review.reviewer else f"User #{review.reviewer_id}"
+        reviewer_role = review.reviewer_role or "-"
+        by_text = f"{reviewer_name}\n{reviewer_role}"
+        data.append([
+            _p(_review_level_label(review.review_level), styles["TableCellCenter"]),
+            _p(_review_action_label(action_value), styles["TableCell"]),
+            _p(by_text, styles["TableCell"]),
+            _p(_format_review_datetime(review.reviewed_at), styles["TableCellCenter"]),
+            _p(review.comments or "-", styles["TableCell"]),
+        ])
+
+    table = Table(data, repeatRows=1, colWidths=[72, 112, 118, 88, 145])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.white),
+        ("TEXTCOLOR", (0, 0), (-1, 0), REPORT_TEXT),
+        ("BOX", (0, 0), (-1, -1), 0.8, REPORT_BORDER),
+        ("INNERGRID", (0, 0), (-1, -1), 0.45, REPORT_BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, REPORT_ROW_ALT]),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+
+    return [
+        Spacer(1, 16),
+        Paragraph("Approval / Forwarding Remarks", styles["SectionTitle"]),
+        table,
+    ]
+
+
 def _status_label(status_value: str | None) -> str:
     labels = {
         "UNDER_LINE_MANAGER_REVIEW": "SUBMITTED TO LINE MANAGER",
@@ -548,6 +697,7 @@ def _status_label(status_value: str | None) -> str:
         "DRAFT": "DRAFT",
     }
     return labels.get(status_value, status_value or "-")
+
 
 @router.get("/inspections/search")
 def search_inspection_reports(
@@ -570,11 +720,12 @@ def search_inspection_reports(
 
 
 @router.get("/inspection/{inspection_id}/pdf")
-def inspection_pdf(inspection_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def inspection_pdf(inspection_id: int, request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     inspection = db.get(Inspection, inspection_id)
     if not inspection:
         raise HTTPException(status_code=404, detail="Inspection not found")
     require_inspection_access(db, user, inspection)
+
     buffer = BytesIO()
     styles = _configure_pdf_styles()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=28, bottomMargin=28)
@@ -628,7 +779,12 @@ def inspection_pdf(inspection_id: int, db: Session = Depends(get_db), user: User
                 _p(s.remarks or "-", styles["TableCell"]),
             ])
         if len(data) == 1:
-            data.append([_p("No entry records", styles["TableCell"]), _p("-", styles["TableCellCenter"]), _p("-", styles["TableCellCenter"]), _p("-", styles["TableCell"])])
+            data.append([
+                _p("No entry records", styles["TableCell"]),
+                _p("-", styles["TableCellCenter"]),
+                _p("-", styles["TableCellCenter"]),
+                _p("-", styles["TableCell"]),
+            ])
         table = Table(data, repeatRows=1, colWidths=[220, 70, 70, 175])
 
     table.setStyle(TableStyle([
@@ -644,6 +800,8 @@ def inspection_pdf(inspection_id: int, db: Session = Depends(get_db), user: User
         ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
     ]))
     story.append(table)
+    story.extend(_build_approval_remarks_table(db, inspection, styles))
+
     total_media = len([media for media in (inspection.media or []) if not media.is_deleted])
     total_photos = len([media for media in (inspection.media or []) if not media.is_deleted and media.media_type == MediaType.PHOTO])
     total_videos = len([media for media in (inspection.media or []) if not media.is_deleted and media.media_type == MediaType.VIDEO])
@@ -651,13 +809,35 @@ def inspection_pdf(inspection_id: int, db: Session = Depends(get_db), user: User
     story.append(Paragraph("Evidence Summary", styles["SectionTitle"]))
     story.append(_build_summary_table(total_media, total_photos, total_videos, styles))
     story.append(Spacer(1, 12))
-    story.extend(_build_photo_preview_table(inspection, styles))
+    story.extend(_build_photo_preview_table(inspection, styles, request))
     if total_videos:
         story.append(Spacer(1, 12))
-        story.extend(_build_video_link_section(inspection, styles))
+        story.extend(_build_video_link_section(inspection, styles, request))
+
     doc.build(story, onFirstPage=_draw_pdf_footer, onLaterPages=_draw_pdf_footer)
     buffer.seek(0)
-    return StreamingResponse(buffer, media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename={inspection.inspection_no}.pdf"})
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={inspection.inspection_no}.pdf"},
+    )
+
+
+@router.get("/evidence/{media_id}")
+def open_report_evidence(media_id: int, token: str, db: Session = Depends(get_db)):
+    _verify_evidence_token(media_id, token)
+
+    media = db.get(InspectionMedia, media_id)
+    if not media or media.is_deleted:
+        raise HTTPException(status_code=404, detail="Evidence file not found")
+
+    data = download_bytes(media.object_path)
+    filename = _inline_filename(media.original_file_name, f"evidence-{media.id}")
+    return Response(
+        content=data,
+        media_type=media.mime_type or "application/octet-stream",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
 
 
 @router.get("/inspections/pdf")
@@ -672,7 +852,6 @@ def inspections_pdf(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    # PDF register intentionally exports the full filtered result, not only the current page.
     inspections = _query_inspections(db, user, from_date, to_date, station_id, contract_id, submitted_by, inspection_type, status).limit(5000).all()
     buffer = BytesIO()
     styles = _configure_pdf_styles()
@@ -685,6 +864,7 @@ def inspections_pdf(
         styles["Normal"],
     ))
     story.append(Spacer(1, 10))
+
     data = [[
         Paragraph("Inspection No", styles["TableHeader"]),
         Paragraph("Date", styles["TableHeader"]),
@@ -707,7 +887,6 @@ def inspections_pdf(
                     _p(i.inspection_date, styles["TableCellCenter"]),
                     _p(i.station.station_name if i.station else i.station_id, styles["TableCell"]),
                     _p(i.submitter.name if i.submitter else i.submitted_by, styles["TableCell"]),
-                    # _p(i.status.value, styles["TableCellCenter"]),
                     _p(_status_label(i.status.value), styles["TableCellCenter"]),
                     _p(e.entry_no, styles["TableCellCenter"]),
                     _p(e.attribute.name if e.attribute else e.attribute_id, styles["TableCell"]),
@@ -741,6 +920,7 @@ def inspections_pdf(
             _p("-", styles["TableCellCenter"]),
             _p("-", styles["TableCellCenter"]),
         ])
+
     table = Table(data, repeatRows=1, colWidths=[115, 58, 95, 95, 105, 48, 110, 105, 62, 35])
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.white),
@@ -757,4 +937,8 @@ def inspections_pdf(
     story.append(table)
     doc.build(story, onFirstPage=_draw_pdf_footer, onLaterPages=_draw_pdf_footer)
     buffer.seek(0)
-    return StreamingResponse(buffer, media_type="application/pdf", headers={"Content-Disposition": "attachment; filename=inspection-register.pdf"})
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=inspection-register.pdf"},
+    )

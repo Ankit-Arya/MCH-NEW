@@ -60,7 +60,7 @@
                   <button class="btn btn-sm btn-secondary" @click="downloadPdf(i)">Download</button>
                 </div>
               </td>
-              <td><button class="btn btn-primary" @click="recommend(i)" :disabled="actingId === i.id">{{ actionLabel(i) }}</button></td>
+              <td><button class="btn btn-primary" @click="openReviewModal(i)" :disabled="actingId === i.id">{{ actionLabel(i) }}</button></td>
             </tr>
             <tr v-if="!rows.length"><td colspan="8" class="muted">No pending reviews.</td></tr>
           </tbody>
@@ -88,7 +88,7 @@
             </button>
             <button class="btn btn-outline" @click="viewPdf(i)" :disabled="pdfLoading">View PDF</button>
             <button class="btn btn-secondary" @click="downloadPdf(i)">Download PDF</button>
-            <button class="btn btn-primary review-button" @click="recommend(i)" :disabled="actingId === i.id">
+            <button class="btn btn-primary review-button" @click="openReviewModal(i)" :disabled="actingId === i.id">
               {{ actionLabel(i) }}
             </button>
           </div>
@@ -129,9 +129,60 @@
             <div class="tracker-copy">
               <strong>{{ stage.label }}</strong>
               <small>{{ formatDateTime(stage.at) }}<template v-if="stage.by"> · {{ stage.by }}</template><template v-if="stage.action"> · {{ actionName(stage.action) }}</template></small>
+              <p v-if="stage.note" class="tracker-note">{{ stage.note }}</p>
             </div>
           </div>
           <p v-if="!trackerStages(selectedTrackerRow).length" class="muted small-text">Tracker unavailable for this inspection.</p>
+        </div>
+      </div>
+    </section>
+
+
+    <section v-if="reviewModal.open" class="tracker-modal-backdrop" @click.self="closeReviewModal">
+      <div class="tracker-modal-card review-modal-card">
+        <div class="tracker-modal-header">
+          <div>
+            <p class="muted small-text">Hierarchy review action</p>
+            <h2>{{ reviewModal.item?.inspection_no }}</h2>
+            <p class="muted small-text">
+              {{ reviewModal.item?.station_name || '-' }} · {{ statusLabel(reviewModal.item?.status) }}
+            </p>
+          </div>
+          <button class="btn btn-outline" type="button" @click="closeReviewModal">Close</button>
+        </div>
+
+        <div class="review-form-grid">
+          <label class="form-field">
+            <span class="label">Action</span>
+            <select class="input" v-model="reviewModal.action">
+              <option v-for="option in reviewActionOptions(reviewModal.item)" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+          </label>
+
+          <label class="form-field">
+            <span class="label">Remarks before forwarding / approval</span>
+            <textarea
+              class="input remarks-input"
+              v-model="reviewModal.comments"
+              rows="5"
+              maxlength="1000"
+              placeholder="Enter review remarks. These remarks will appear in the inspection PDF with your name, role, action and date/time."
+            ></textarea>
+          </label>
+
+          <div class="review-preview-box">
+            <strong>PDF trail preview</strong>
+            <span>{{ actionName(reviewModal.action) }} · {{ reviewModal.comments || 'No remarks entered' }}</span>
+          </div>
+
+          <div class="review-modal-actions">
+            <button class="btn btn-outline" type="button" @click="closeReviewModal" :disabled="actingId === reviewModal.item?.id">Cancel</button>
+            <button class="btn btn-primary" type="button" @click="submitReview" :disabled="!reviewModal.action || actingId === reviewModal.item?.id">
+              {{ actingId === reviewModal.item?.id ? 'Submitting...' : 'Submit review' }}
+            </button>
+          </div>
         </div>
       </div>
     </section>
@@ -160,6 +211,7 @@ const pdfLoading = ref(false)
 
 const pdfPreview = reactive({ open: false, url: '', title: '', downloadName: 'inspection.pdf' })
 const selectedTrackerRow = ref(null)
+const reviewModal = reactive({ open: false, item: null, action: '', comments: '' })
 const pagination = reactive({ page: 1, size: 20, total: 0, pages: 1, has_next: false, has_prev: false, from_record: 0, to_record: 0 })
 
 
@@ -235,11 +287,54 @@ function actionName(action) {
   const labels = { RECOMMEND_PENALTY: 'Recommended', APPROVE: 'Approved', REJECT: 'Rejected', RETURN_FOR_CLARIFICATION: 'Returned', SEND_TO_GM: 'Sent to GM', GM_REVIEW: 'Reviewed' }
   return labels[action] || String(action || '').replaceAll('_', ' ')
 }
-function actionLabel(item) {
-  if (item.status === 'LINE_MANAGER_RECOMMENDED') return 'Approve as DGM'
-  if (item.status === 'GM_REVIEW_REQUIRED') return 'Review as GM'
-  return 'Recommend Penalty'
+function reviewActionOptions(item) {
+  if (!item) return []
+  if (item.status === 'UNDER_LINE_MANAGER_REVIEW') {
+    return [
+      { value: 'RECOMMEND_PENALTY', label: 'Forward to DGM / Recommend' },
+      { value: 'RETURN_FOR_CLARIFICATION', label: 'Return for clarification' }
+    ]
+  }
+  if (item.status === 'LINE_MANAGER_RECOMMENDED') {
+    return [
+      { value: 'APPROVE', label: 'Approve as DGM' },
+      { value: 'SEND_TO_GM', label: 'Forward to GM/Ops' },
+      { value: 'REJECT', label: 'Reject' }
+    ]
+  }
+  if (item.status === 'GM_REVIEW_REQUIRED') return [{ value: 'GM_REVIEW', label: 'Review / close as GM/Ops' }]
+  return []
 }
+function actionLabel(item) {
+  const options = reviewActionOptions(item)
+  return options[0]?.label || 'Review'
+}
+function defaultRemarks(item, action) {
+  const labels = {
+    RECOMMEND_PENALTY: 'Reviewed and forwarded to DGM.',
+    RETURN_FOR_CLARIFICATION: 'Returned for clarification.',
+    APPROVE: 'Approved by DGM.',
+    SEND_TO_GM: 'Forwarded to GM/Ops for review.',
+    REJECT: 'Rejected by DGM.',
+    GM_REVIEW: 'Reviewed by GM/Ops.'
+  }
+  return labels[action] || ''
+}
+function openReviewModal(item) {
+  const options = reviewActionOptions(item)
+  reviewModal.item = item
+  reviewModal.action = options[0]?.value || ''
+  reviewModal.comments = defaultRemarks(item, reviewModal.action)
+  reviewModal.open = true
+}
+function closeReviewModal() {
+  if (actingId.value) return
+  reviewModal.open = false
+  reviewModal.item = null
+  reviewModal.action = ''
+  reviewModal.comments = ''
+}
+
 
 async function loadPage() {
   loading.value = true
@@ -271,20 +366,28 @@ async function viewPdf(item) {
   finally { pdfLoading.value = false }
 }
 async function downloadPdf(item) { await downloadBlob(`/reports/inspection/${item.id}/pdf`, {}, `${item.inspection_no}.pdf`) }
-async function recommend(i) {
+async function submitReview() {
+  const i = reviewModal.item
+  if (!i || !reviewModal.action) return
+
   actingId.value = i.id
   try {
     let endpoint = '/reviews/' + i.id + '/line-manager'
-    let payload = { action: 'RECOMMEND_PENALTY', comments: 'Reviewed and recommended from frontend.', recommended_penalty_amount: 0 }
-    if (i.status === 'LINE_MANAGER_RECOMMENDED') {
-      endpoint = '/reviews/' + i.id + '/dgm'
-      payload = { action: 'APPROVE', comments: 'Approved by DGM.', final_penalty_amount: 0 }
+    const payload = {
+      action: reviewModal.action,
+      comments: (reviewModal.comments || '').trim() || null,
+      recommended_penalty_amount: 0,
+      final_penalty_amount: 0
     }
-    if (i.status === 'GM_REVIEW_REQUIRED') {
-      endpoint = '/reviews/' + i.id + '/gm'
-      payload = { action: 'GM_REVIEW', comments: 'Reviewed by GM.' }
-    }
+
+    if (i.status === 'LINE_MANAGER_RECOMMENDED') endpoint = '/reviews/' + i.id + '/dgm'
+    if (i.status === 'GM_REVIEW_REQUIRED') endpoint = '/reviews/' + i.id + '/gm'
+
     await api.post(endpoint, payload)
+    reviewModal.open = false
+    reviewModal.item = null
+    reviewModal.action = ''
+    reviewModal.comments = ''
     await loadPage()
     if (rows.value.length === 0 && pagination.page > 1) { pagination.page -= 1; await loadPage() }
   } finally { actingId.value = null }
@@ -325,6 +428,15 @@ onBeforeUnmount(cleanupPdfUrl)
 .mobile-action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
 .mobile-status-button { grid-column: 1 / -1; width: 100%; }
 .review-button { grid-column: 1 / -1; }
+
+.tracker-note { margin: 4px 0 0; color: #334155; font-size: 11px; line-height: 1.35; background: white; border: 1px solid #e2e8f0; border-radius: 10px; padding: 6px 8px; }
+.review-modal-card { width: min(680px, 100%); }
+.review-form-grid { display: grid; gap: 14px; padding-top: 16px; }
+.form-field { display: grid; gap: 6px; }
+.remarks-input { resize: vertical; min-height: 120px; line-height: 1.45; }
+.review-preview-box { display: grid; gap: 4px; padding: 12px 14px; border: 1px solid #dbe3f0; border-radius: 16px; background: #f8fafc; color: #334155; }
+.review-preview-box strong { color: #0f172a; }
+.review-modal-actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; padding-top: 4px; }
 @media (max-width: 760px) {
   .desktop-table { display: none; }
   .mobile-list { display: grid; gap: 14px; }

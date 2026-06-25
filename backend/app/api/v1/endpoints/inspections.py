@@ -13,6 +13,7 @@ from app.models.all_models import (
     InspectionAttribute,
     InspectionEntry,
     InspectionMedia,
+    InspectionReview,
     InspectionStatus,
     InspectionSubArea,
     InspectionType,
@@ -47,6 +48,14 @@ from app.services.audit_service import audit_log
 router = APIRouter()
 
 START_ADMIN_ROLES = {RoleCode.SUPER_ADMIN, RoleCode.HK_CELL_ADMIN}
+ACTION_REQUIRED_STATUSES = {
+    InspectionStatus.DRAFT,
+    InspectionStatus.RETURNED_FOR_CLARIFICATION,
+}
+
+
+def _iso(value):
+    return value.isoformat() if value else None
 
 
 def _inspection_score(inspection: Inspection) -> float:
@@ -78,6 +87,51 @@ def _row(i: Inspection) -> dict:
         "entry_count": len(active_entries),
         "media_count": len([m for m in (i.media or []) if not m.is_deleted]),
     }
+
+
+def _latest_review_payload(db: Session, inspection_id: int) -> dict | None:
+    review = (
+        db.query(InspectionReview)
+        .filter(InspectionReview.inspection_id == inspection_id)
+        .order_by(InspectionReview.reviewed_at.desc(), InspectionReview.id.desc())
+        .first()
+    )
+    if not review:
+        return None
+    return {
+        "id": review.id,
+        "review_level": review.review_level,
+        "reviewer_id": review.reviewer_id,
+        "reviewer_name": review.reviewer.name if review.reviewer else None,
+        "reviewer_role": review.reviewer_role,
+        "action": review.action.value if getattr(review.action, "value", None) else str(review.action or ""),
+        "comments": review.comments,
+        "reviewed_at": _iso(review.reviewed_at),
+    }
+
+
+def _action_required_row(db: Session, inspection: Inspection) -> dict:
+    row = _row(inspection)
+    latest_review = _latest_review_payload(db, inspection.id)
+    if inspection.status == InspectionStatus.RETURNED_FOR_CLARIFICATION:
+        reason = "Returned by reviewer. Correct the inspection and resubmit."
+        priority = 1
+    else:
+        reason = "Draft saved. Complete mandatory evidence and submit."
+        priority = 2
+    row.update(
+        {
+            "reason": reason,
+            "priority": priority,
+            "can_continue": inspection.status in ACTION_REQUIRED_STATUSES,
+            "latest_review": latest_review,
+            "latest_remarks": latest_review.get("comments") if latest_review else inspection.remarks,
+            "latest_actor": latest_review.get("reviewer_name") if latest_review else None,
+            "latest_actor_role": latest_review.get("reviewer_role") if latest_review else None,
+            "latest_action_at": latest_review.get("reviewed_at") if latest_review else None,
+        }
+    )
+    return row
 
 
 def _validate_upload_file(media_type: MediaType, file: UploadFile, data: bytes) -> None:
@@ -199,6 +253,48 @@ def list_inspections(
     if status:
         query = query.filter(Inspection.status == status)
     return [_row(i) for i in query.limit(limit).all()]
+
+
+@router.get("/action-required")
+def action_required_inspections(
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Return the logged-in user's unfinished work separately from normal reports.
+
+    Draft inspections and returned-for-clarification inspections are work items for the
+    original submitter. They should not be hidden among completed report history.
+    """
+
+    query = (
+        db.query(Inspection)
+        .filter(
+            Inspection.submitted_by == user.id,
+            Inspection.status.in_([InspectionStatus.DRAFT, InspectionStatus.RETURNED_FOR_CLARIFICATION]),
+        )
+        .order_by(Inspection.updated_at.desc(), Inspection.id.desc())
+    )
+    total = query.count()
+    pages = max(1, (total + size - 1) // size) if total else 1
+    page = min(max(page, 1), pages)
+    items = query.offset((page - 1) * size).limit(size).all()
+    return {
+        "items": [_action_required_row(db, item) for item in items],
+        "total": total,
+        "page": page,
+        "size": size,
+        "pages": pages,
+        "has_next": page < pages,
+        "has_prev": page > 1,
+        "from_record": ((page - 1) * size + 1) if total else 0,
+        "to_record": min(page * size, total),
+        "counts": {
+            "draft": query.filter(Inspection.status == InspectionStatus.DRAFT).count(),
+            "returned": query.filter(Inspection.status == InspectionStatus.RETURNED_FOR_CLARIFICATION).count(),
+        },
+    }
 
 
 @router.get("/start-options")
