@@ -5,27 +5,27 @@
     <section class="login-shell" aria-label="Login panel">
       <div class="info-card">
         <img src="../assets/dmrc-logo.svg" alt="DMRC" class="login-logo" />
-        <p class="eyebrow">KPI-6 Housekeeping</p>
-        <h1>Real-Time Housekeeping Inspection Platform</h1>
+        <!-- <p class="eyebrow">KPI-6 Housekeeping</p> -->
+        <h1>Comprehensive Housekeeping Inspection Platform</h1>
         <p class="info-copy">
-          Geo-tagged inspections, role-wise review, dashboard analytics and PDF record keeping for station cleanliness monitoring.
+          Advanced analytics, monitoring and automated KPI workflows.
         </p>
       </div>
 
       <form class="login-card" @submit.prevent="submit">
         <div>
           <h2>Sign in</h2>
-          <p class="muted">Use demo credentials or your assigned employee login.</p>
+          <!-- <p class="muted">Employee Login.</p> -->
         </div>
 
         <label>
           <span class="label">Username</span>
-          <input class="input" v-model.trim="username" autocomplete="username" placeholder="Enter username" />
+          <input class="input" v-model.trim="username" placeholder="Enter username" />
         </label>
 
         <label>
           <span class="label">Password</span>
-          <input class="input" type="password" v-model="password" autocomplete="current-password" placeholder="Enter password" />
+          <input class="input" type="password" v-model="password" placeholder="Enter password" />
         </label>
 
         <button class="btn btn-primary login-btn" :disabled="auth.loading">
@@ -35,8 +35,9 @@
         <p v-if="error" class="error-box">{{ error }}</p>
 
         <div class="demo-box">
-          <strong>Demo users</strong>
-          <span>admin/admin123 · sm01/sm123 · eit01/eit123 · lm01/lm123 · dgm01/dgm123 · gm01/gm123</span>
+          <strong>For assistance and queries contact : </strong>
+          <!-- <span>admin/admin123 · sm01/sm123 · eit01/eit123 · lm01/lm123 · dgm01/dgm123 · gm01/gm123</span> -->
+          <span>Sh. Ankit Arya/ IT Cell Ops - 8800460307 || Ext. - 113755</span>          
         </div>
       </form>
     </section>
@@ -50,8 +51,9 @@ import { useAuthStore } from '../stores/auth'
 
 const router = useRouter()
 const auth = useAuthStore()
-const username = ref('admin')
-const password = ref('admin123')
+const username = ref('')
+const password = ref('')
+
 const error = ref('')
 
 async function submit() {
@@ -60,7 +62,8 @@ async function submit() {
     await auth.login(username.value, password.value)
     router.push('/')
   } catch (e) {
-    error.value = e?.response?.data?.detail || 'Login failed'
+    // error.value = e?.response?.data?.detail || 'Login failed'
+    error.value = 'Login failed'
   }
 }
 </script>
