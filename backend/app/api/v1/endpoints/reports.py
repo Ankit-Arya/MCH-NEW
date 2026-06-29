@@ -324,15 +324,24 @@ def _build_report_header(styles, title: str, subtitle: str | None = None) -> Tab
     ]))
     return header
 
+def _format_inspection_date_time(inspection: Inspection) -> str:
+    if inspection.inspection_date and inspection.submitted_at:
+        return f"{inspection.inspection_date.strftime('%d-%m-%Y')} {inspection.submitted_at.strftime('%H:%M')}"
+    if inspection.inspection_date:
+        return inspection.inspection_date.strftime("%d-%m-%Y")
+    if inspection.submitted_at:
+        return inspection.submitted_at.strftime("%d-%m-%Y %H:%M")
+    return "-"
+
 
 def _build_metadata_table(inspection: Inspection, styles) -> Table:
     metadata = [
         [
             Paragraph("Inspection No", styles["MetaLabel"]),
             Paragraph(f"<b>{_safe_text(inspection.inspection_no)}</b>", styles["MetaValue"]),
-            Paragraph("Inspection Date", styles["MetaLabel"]),
+            Paragraph("Inspection Date &amp; Time", styles["MetaLabel"]),
             Paragraph(
-                f"<b>{_safe_text(inspection.inspection_date.strftime('%d-%m-%Y') if inspection.inspection_date else '-')}</b>",
+                f"<b>{_safe_text(_format_inspection_date_time(inspection))}</b>",
                 styles["MetaValue"],
             ),
         ],
@@ -614,7 +623,7 @@ def _review_action_label(action_value: str | None) -> str:
     labels = {
         "COMMENT": "Comment",
         "RETURN_FOR_CLARIFICATION": "Returned for clarification",
-        "RECOMMEND_PENALTY": "Forwarded / recommended",
+        "RECOMMEND_PENALTY": "Forwarded /Recommended",
         "APPROVE": "Approved",
         "REJECT": "Rejected",
         "SEND_TO_GM": "Forwarded to GM/Ops",
