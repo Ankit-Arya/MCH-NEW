@@ -4,15 +4,18 @@
 
     <form class="card grid" @submit.prevent="start">
       <div>
+        <label class="label">KPI</label>
+        <select class="input" v-model="form.kpi_category" required>
+          <option v-for="kpi in kpiOptions" :key="kpi.code" :value="kpi.code">{{ kpi.label }}</option>
+        </select>
+        <p class="hint">Select KPI first. KPI-6 keeps the existing cleanliness form. Chemicals opens quantity inspection.</p>
+      </div>
+
+      <div>
         <label class="label">Station</label>
         <select class="input" v-model="form.station_id" required>
           <option value="">Select station</option>
-          <option
-            v-for="s in startOptions.stations"
-            :key="s.id"
-            :value="s.id"
-            :disabled="!s.is_startable"
-          >
+          <option v-for="s in startOptions.stations" :key="s.id" :value="s.id" :disabled="!s.is_startable">
             {{ s.station_name }}{{ !s.is_startable ? ` - ${s.message}` : '' }}
           </option>
         </select>
@@ -29,6 +32,11 @@
           <label class="label">Inspection Type</label>
           <input class="input" :value="inspectionTypeText" readonly />
         </div>
+      </div>
+
+      <div class="card mini kpi-note" v-if="form.kpi_category === 'KPI_CHEMICALS'">
+        <strong>Chemicals & Consumables KPI</strong>
+        <p>The inspection will compare station-wise required quantity with actual available quantity and calculate shortfall.</p>
       </div>
 
       <div class="card mini">
@@ -52,16 +60,24 @@ import AppLayout from '../components/AppLayout.vue'
 import { api } from '../services/api'
 
 const router = useRouter()
-const startOptions = ref({ stations: [], inspection_type: '', current_role: '', message: '' })
+const startOptions = ref({ stations: [], inspection_type: '', current_role: '', message: '', kpi_categories: [] })
 const error = ref('')
 const form = ref({
   station_id: '',
+  kpi_category: 'KPI_6_CLEANLINESS',
   latitude: null,
   longitude: null,
   gps_accuracy: null,
   device_info: { userAgent: navigator.userAgent },
   remarks: ''
 })
+
+const fallbackKpiOptions = [
+  { code: 'KPI_6_CLEANLINESS', label: 'KPI-6 Level of Cleanliness' },
+  { code: 'KPI_CHEMICALS', label: 'KPI Chemicals & Consumables' }
+]
+
+const kpiOptions = computed(() => startOptions.value.kpi_categories?.length ? startOptions.value.kpi_categories : fallbackKpiOptions)
 
 const selectedStation = computed(() => {
   const stationId = Number(form.value.station_id)
@@ -118,6 +134,7 @@ async function start() {
   try {
     const payload = {
       station_id: Number(form.value.station_id),
+      kpi_category: form.value.kpi_category,
       latitude: form.value.latitude,
       longitude: form.value.longitude,
       gps_accuracy: form.value.gps_accuracy,
@@ -134,6 +151,7 @@ async function start() {
 
 <style scoped>
 .mini { background: #f8fafc; }
+.kpi-note { border: 1px solid #bfdbfe; background: #eff6ff; color: #1e3a8a; }
 .error { color: #dc2626; font-weight: 700; }
 .hint { margin-top: 6px; font-size: 13px; }
 .warning { color: #b45309; font-weight: 600; }

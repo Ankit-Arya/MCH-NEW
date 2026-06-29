@@ -48,6 +48,7 @@
         </RouterLink>
         <RouterLink to="/kpi" @click="closeMobileMenu">KPI & Penalty</RouterLink>
         <RouterLink to="/master" @click="closeMobileMenu">Master Data</RouterLink>
+        <RouterLink to="/master/chemicals" @click="closeMobileMenu">Chemical Mapping</RouterLink>
         <RouterLink to="/access-control" @click="closeMobileMenu">Access Control</RouterLink>
       </nav>
 

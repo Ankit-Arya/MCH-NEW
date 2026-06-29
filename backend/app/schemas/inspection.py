@@ -18,10 +18,10 @@ class ObservationIn(BaseModel):
 
 
 class InspectionStartIn(BaseModel):
-    # Start Inspection must be station-driven.
-    # contract_id and inspection_type are optional only for backward compatibility
-    # with stale/older frontend builds. The backend derives both values again.
+    # Start Inspection remains station-driven. kpi_category lets the same inspection
+    # workflow launch KPI-6 cleanliness or another KPI form such as chemicals.
     station_id: int
+    kpi_category: str = "KPI_6_CLEANLINESS"
     contract_id: int | None = None
     inspection_type: InspectionType | None = None
     latitude: float | None = None
@@ -75,6 +75,7 @@ class InspectionOut(BaseModel):
     contract_id: int
     station_id: int
     inspection_type: InspectionType
+    kpi_category: str = "KPI_6_CLEANLINESS"
     inspection_date: date
     submitted_by: int
     latitude: float | None = None

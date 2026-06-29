@@ -44,6 +44,7 @@ from app.services.inspection_service import (
 )
 from app.services.media_service import build_object_path, sha256_bytes, upload_bytes
 from app.services.audit_service import audit_log
+from app.models.kpi_chemical import InspectionKpiContext, KPI_6_CLEANLINESS, KPI_CHEMICALS
 
 router = APIRouter()
 
@@ -52,6 +53,30 @@ ACTION_REQUIRED_STATUSES = {
     InspectionStatus.DRAFT,
     InspectionStatus.RETURNED_FOR_CLARIFICATION,
 }
+ALLOWED_KPI_CATEGORIES = {KPI_6_CLEANLINESS, KPI_CHEMICALS}
+
+
+def _kpi_category_for(db: Session, inspection_id: int) -> str:
+    ctx = db.query(InspectionKpiContext).filter_by(inspection_id=inspection_id).first()
+    return ctx.kpi_category if ctx else KPI_6_CLEANLINESS
+
+
+def _attach_kpi_category(db: Session, inspection: Inspection) -> Inspection:
+    setattr(inspection, "kpi_category", _kpi_category_for(db, inspection.id))
+    return inspection
+
+
+def _set_kpi_category(db: Session, inspection: Inspection, kpi_category: str | None) -> None:
+    category = (kpi_category or KPI_6_CLEANLINESS).strip()
+    if category not in ALLOWED_KPI_CATEGORIES:
+        raise HTTPException(status_code=422, detail="Unsupported KPI category")
+    ctx = db.query(InspectionKpiContext).filter_by(inspection_id=inspection.id).first()
+    if not ctx:
+        ctx = InspectionKpiContext(inspection_id=inspection.id, kpi_category=category)
+        db.add(ctx)
+    else:
+        ctx.kpi_category = category
+    db.flush()
 
 
 def _iso(value):
@@ -74,6 +99,7 @@ def _row(i: Inspection) -> dict:
         "inspection_no": i.inspection_no,
         "inspection_date": i.inspection_date.isoformat() if i.inspection_date else None,
         "inspection_type": i.inspection_type.value,
+        "kpi_category": getattr(i, "kpi_category", KPI_6_CLEANLINESS),
         "status": i.status.value,
         "station_id": i.station_id,
         "station_name": i.station.station_name if i.station else None,
@@ -252,7 +278,10 @@ def list_inspections(
         query = query.filter(Inspection.inspection_type == inspection_type)
     if status:
         query = query.filter(Inspection.status == status)
-    return [_row(i) for i in query.limit(limit).all()]
+    items = query.limit(limit).all()
+    for item in items:
+        _attach_kpi_category(db, item)
+    return [_row(i) for i in items]
 
 
 @router.get("/action-required")
@@ -280,6 +309,8 @@ def action_required_inspections(
     pages = max(1, (total + size - 1) // size) if total else 1
     page = min(max(page, 1), pages)
     items = query.offset((page - 1) * size).limit(size).all()
+    for item in items:
+        _attach_kpi_category(db, item)
     return {
         "items": [_action_required_row(db, item) for item in items],
         "total": total,
@@ -316,6 +347,10 @@ def start_options(db: Session = Depends(get_db), user: User = Depends(get_curren
             return {
                 "current_role": user.role.code.value if user.role else None,
                 "inspection_type": _inspection_type_for_user(user).value,
+                "kpi_categories": [
+                    {"code": KPI_6_CLEANLINESS, "label": "KPI-6 Level of Cleanliness"},
+                    {"code": KPI_CHEMICALS, "label": "KPI Chemicals & Consumables"},
+                ],
                 "stations": [],
                 "message": "No stations are directly mapped to this user.",
             }
@@ -325,6 +360,10 @@ def start_options(db: Session = Depends(get_db), user: User = Depends(get_curren
     return {
         "current_role": user.role.code.value if user.role else None,
         "inspection_type": _inspection_type_for_user(user).value,
+        "kpi_categories": [
+            {"code": KPI_6_CLEANLINESS, "label": "KPI-6 Level of Cleanliness"},
+            {"code": KPI_CHEMICALS, "label": "KPI Chemicals & Consumables"},
+        ],
         "stations": stations,
     }
 
@@ -350,7 +389,11 @@ def checklist(contract_id: int, station_id: int, db: Session = Depends(get_db), 
 
 @router.post("/start", response_model=InspectionOut)
 def start_inspection(payload: InspectionStartIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return create_inspection(db, payload, user)
+    inspection = create_inspection(db, payload, user)
+    _set_kpi_category(db, inspection, payload.kpi_category)
+    db.commit()
+    db.refresh(inspection)
+    return _attach_kpi_category(db, inspection)
 
 
 @router.get("/{inspection_id}", response_model=InspectionOut)
@@ -359,7 +402,7 @@ def get_inspection(inspection_id: int, db: Session = Depends(get_db), user: User
     if not inspection:
         raise HTTPException(status_code=404, detail="Inspection not found")
     require_inspection_access(db, user, inspection)
-    return inspection
+    return _attach_kpi_category(db, inspection)
 
 
 @router.put("/{inspection_id}/draft", response_model=InspectionOut)

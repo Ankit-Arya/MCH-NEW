@@ -32,6 +32,7 @@ from app.models.all_models import (
     MediaType,
     User,
 )
+from app.models.kpi_chemical import ChemicalInspectionEntry, InspectionKpiContext, KPI_CHEMICALS
 from app.services.media_service import download_bytes
 
 router = APIRouter()
@@ -689,6 +690,96 @@ def _build_approval_remarks_table(db: Session, inspection: Inspection, styles):
     ]
 
 
+
+def _inspection_kpi_category(db: Session, inspection_id: int) -> str:
+    ctx = db.query(InspectionKpiContext).filter_by(inspection_id=inspection_id).first()
+    return ctx.kpi_category if ctx else "KPI_6_CLEANLINESS"
+
+
+def _chemical_summary(entries: list[ChemicalInspectionEntry]) -> dict:
+    required_total = sum(float(row.required_quantity or 0) for row in entries if not row.is_deleted)
+    actual_total = sum(float(row.actual_quantity or 0) for row in entries if not row.is_deleted)
+    actual_capped_total = sum(min(float(row.actual_quantity or 0), float(row.required_quantity or 0)) for row in entries if not row.is_deleted)
+    shortfall_total = sum(float(row.shortfall_quantity or 0) for row in entries if not row.is_deleted)
+    score = 100 if required_total == 0 else round(actual_capped_total / required_total * 100, 2)
+    return {
+        "required_total": round(required_total, 2),
+        "actual_total": round(actual_total, 2),
+        "shortfall_total": round(shortfall_total, 2),
+        "score_percent": score,
+        "below_threshold": score < 90,
+    }
+
+
+def _build_chemical_findings_table(db: Session, inspection: Inspection, styles):
+    entries = (
+        db.query(ChemicalInspectionEntry)
+        .filter(ChemicalInspectionEntry.inspection_id == inspection.id, ChemicalInspectionEntry.is_deleted.is_(False))
+        .order_by(ChemicalInspectionEntry.id)
+        .all()
+    )
+    summary = _chemical_summary(entries)
+    story = [Paragraph("KPI Chemicals & Consumables Findings", styles["SectionTitle"])]
+    story.append(Paragraph(
+        f"Overall availability score: <b>{summary['score_percent']}%</b> | Required total: <b>{summary['required_total']}</b> | Actual total: <b>{summary['actual_total']}</b> | Shortfall: <b>{summary['shortfall_total']}</b>",
+        styles["Normal"],
+    ))
+    story.append(Spacer(1, 8))
+    data = [[
+        Paragraph("Chemical", styles["TableHeader"]),
+        Paragraph("Required", styles["TableHeader"]),
+        Paragraph("Actual", styles["TableHeader"]),
+        Paragraph("Difference", styles["TableHeader"]),
+        Paragraph("Shortfall", styles["TableHeader"]),
+        Paragraph("Availability", styles["TableHeader"]),
+        Paragraph("Remarks", styles["TableHeader"]),
+    ]]
+    if entries:
+        for row in entries:
+            chemical = row.chemical
+            difference = round((row.actual_quantity or 0) - (row.required_quantity or 0), 2)
+            unit = chemical.unit if chemical else ""
+            data.append([
+                _p(chemical.name if chemical else row.chemical_id, styles["TableCell"]),
+                _p(f"{row.required_quantity} {unit}", styles["TableCellCenter"]),
+                _p(f"{row.actual_quantity} {unit}", styles["TableCellCenter"]),
+                _p(f"{difference} {unit}", styles["TableCellCenter"]),
+                _p(f"{row.shortfall_quantity} {unit}", styles["TableCellCenter"]),
+                _p(f"{row.availability_percent}%", styles["TableCellCenter"]),
+                _p(row.remarks or "-", styles["TableCell"]),
+            ])
+    else:
+        data.append([
+            _p("No chemical entries", styles["TableCell"]),
+            _p("-", styles["TableCellCenter"]),
+            _p("-", styles["TableCellCenter"]),
+            _p("-", styles["TableCellCenter"]),
+            _p("-", styles["TableCellCenter"]),
+            _p("-", styles["TableCellCenter"]),
+            _p("-", styles["TableCell"]),
+        ])
+    table = Table(data, repeatRows=1, colWidths=[115, 62, 62, 62, 62, 72, 100])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.white),
+        ("TEXTCOLOR", (0, 0), (-1, 0), REPORT_TEXT),
+        ("BOX", (0, 0), (-1, -1), 0.8, REPORT_BORDER),
+        ("INNERGRID", (0, 0), (-1, -1), 0.45, REPORT_BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, REPORT_ROW_ALT]),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(table)
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(
+        "KPI rule reference: Chemicals & Consumables score is shortfall based; penalty applies if pass percentage is below 90% during billing cycle.",
+        styles["Italic"],
+    ))
+    return story
+
+
 def _status_label(status_value: str | None) -> str:
     labels = {
         "UNDER_LINE_MANAGER_REVIEW": "SUBMITTED TO LINE MANAGER",
@@ -735,71 +826,74 @@ def inspection_pdf(inspection_id: int, request: Request, db: Session = Depends(g
     story.append(Paragraph("Inspection Metadata", styles["SectionTitle"]))
     story.append(_build_metadata_table(inspection, styles))
     story.append(Spacer(1, 14))
-    story.append(Paragraph("Entry-wise Findings", styles["SectionTitle"]))
-
-    entries = db.query(InspectionEntry).filter_by(inspection_id=inspection.id, is_deleted=False).order_by(InspectionEntry.id).all()
-    if entries:
-        data = [[
-            Paragraph("Entry", styles["TableHeader"]),
-            Paragraph("Attribute", styles["TableHeader"]),
-            Paragraph("Sub-area", styles["TableHeader"]),
-            Paragraph("Grade", styles["TableHeader"]),
-            Paragraph("Score", styles["TableHeader"]),
-            Paragraph("Photo / Video", styles["TableHeader"]),
-            Paragraph("Captured", styles["TableHeader"]),
-            Paragraph("Remarks", styles["TableHeader"]),
-        ]]
-        for e in entries:
-            photos, videos = _media_counts(db, e.id)
-            captured = e.captured_at.strftime("%d-%m-%Y %H:%M") if e.captured_at else "-"
-            gps = f"GPS {e.captured_latitude or '-'}, {e.captured_longitude or '-'} acc {e.gps_accuracy or '-'}m"
-            data.append([
-                _p(e.entry_no, styles["TableCellCenter"]),
-                _p(e.attribute.name if e.attribute else e.attribute_id, styles["TableCell"]),
-                _p(e.sub_area.name if e.sub_area else e.sub_area_id, styles["TableCell"]),
-                _p(e.grade_code, styles["TableCellCenter"]),
-                _p(f"{e.grade_percentage}%", styles["TableCellCenter"]),
-                _p(f"P:{photos} V:{videos}", styles["TableCellCenter"]),
-                _p(f"{captured}\n{gps}", styles["TableCell"]),
-                _p(e.remarks or "-", styles["TableCell"]),
-            ])
-        table = Table(data, repeatRows=1, colWidths=[34, 78, 72, 44, 44, 58, 95, 110])
+    if _inspection_kpi_category(db, inspection.id) == KPI_CHEMICALS:
+        story.extend(_build_chemical_findings_table(db, inspection, styles))
     else:
-        data = [[
-            Paragraph("Attribute", styles["TableHeader"]),
-            Paragraph("Grade", styles["TableHeader"]),
-            Paragraph("Score", styles["TableHeader"]),
-            Paragraph("Remarks", styles["TableHeader"]),
-        ]]
-        for s in inspection.attribute_scores:
-            data.append([
-                _p(s.attribute.name if s.attribute else s.attribute_id, styles["TableCell"]),
-                _p(s.grade_code, styles["TableCellCenter"]),
-                _p(f"{s.grade_percentage}%", styles["TableCellCenter"]),
-                _p(s.remarks or "-", styles["TableCell"]),
-            ])
-        if len(data) == 1:
-            data.append([
-                _p("No entry records", styles["TableCell"]),
-                _p("-", styles["TableCellCenter"]),
-                _p("-", styles["TableCellCenter"]),
-                _p("-", styles["TableCell"]),
-            ])
-        table = Table(data, repeatRows=1, colWidths=[220, 70, 70, 175])
+        story.append(Paragraph("Entry-wise Findings", styles["SectionTitle"]))
 
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.white),
-        ("TEXTCOLOR", (0, 0), (-1, 0), REPORT_TEXT),
-        ("BOX", (0, 0), (-1, -1), 0.8, REPORT_BORDER),
-        ("INNERGRID", (0, 0), (-1, -1), 0.45, REPORT_BORDER),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, REPORT_ROW_ALT]),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-    ]))
-    story.append(table)
+        entries = db.query(InspectionEntry).filter_by(inspection_id=inspection.id, is_deleted=False).order_by(InspectionEntry.id).all()
+        if entries:
+            data = [[
+                Paragraph("Entry", styles["TableHeader"]),
+                Paragraph("Attribute", styles["TableHeader"]),
+                Paragraph("Sub-area", styles["TableHeader"]),
+                Paragraph("Grade", styles["TableHeader"]),
+                Paragraph("Score", styles["TableHeader"]),
+                Paragraph("Photo / Video", styles["TableHeader"]),
+                Paragraph("Captured", styles["TableHeader"]),
+                Paragraph("Remarks", styles["TableHeader"]),
+            ]]
+            for e in entries:
+                photos, videos = _media_counts(db, e.id)
+                captured = e.captured_at.strftime("%d-%m-%Y %H:%M") if e.captured_at else "-"
+                gps = f"GPS {e.captured_latitude or '-'}, {e.captured_longitude or '-'} acc {e.gps_accuracy or '-'}m"
+                data.append([
+                    _p(e.entry_no, styles["TableCellCenter"]),
+                    _p(e.attribute.name if e.attribute else e.attribute_id, styles["TableCell"]),
+                    _p(e.sub_area.name if e.sub_area else e.sub_area_id, styles["TableCell"]),
+                    _p(e.grade_code, styles["TableCellCenter"]),
+                    _p(f"{e.grade_percentage}%", styles["TableCellCenter"]),
+                    _p(f"P:{photos} V:{videos}", styles["TableCellCenter"]),
+                    _p(f"{captured}\n{gps}", styles["TableCell"]),
+                    _p(e.remarks or "-", styles["TableCell"]),
+                ])
+            table = Table(data, repeatRows=1, colWidths=[34, 78, 72, 44, 44, 58, 95, 110])
+        else:
+            data = [[
+                Paragraph("Attribute", styles["TableHeader"]),
+                Paragraph("Grade", styles["TableHeader"]),
+                Paragraph("Score", styles["TableHeader"]),
+                Paragraph("Remarks", styles["TableHeader"]),
+            ]]
+            for s in inspection.attribute_scores:
+                data.append([
+                    _p(s.attribute.name if s.attribute else s.attribute_id, styles["TableCell"]),
+                    _p(s.grade_code, styles["TableCellCenter"]),
+                    _p(f"{s.grade_percentage}%", styles["TableCellCenter"]),
+                    _p(s.remarks or "-", styles["TableCell"]),
+                ])
+            if len(data) == 1:
+                data.append([
+                    _p("No entry records", styles["TableCell"]),
+                    _p("-", styles["TableCellCenter"]),
+                    _p("-", styles["TableCellCenter"]),
+                    _p("-", styles["TableCell"]),
+                ])
+            table = Table(data, repeatRows=1, colWidths=[220, 70, 70, 175])
+
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.white),
+            ("TEXTCOLOR", (0, 0), (-1, 0), REPORT_TEXT),
+            ("BOX", (0, 0), (-1, -1), 0.8, REPORT_BORDER),
+            ("INNERGRID", (0, 0), (-1, -1), 0.45, REPORT_BORDER),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, REPORT_ROW_ALT]),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(table)
     story.extend(_build_approval_remarks_table(db, inspection, styles))
 
     total_media = len([media for media in (inspection.media or []) if not media.is_deleted])

@@ -11,6 +11,7 @@ import MasterDataView from '../views/MasterDataView.vue'
 import ReportsView from '../views/ReportsView.vue'
 import AccessControlView from '../views/AccessControlView.vue'
 import AdminSqlToolView from '../views/AdminSqlToolView.vue'
+import ChemicalMasterView from '../views/ChemicalMasterView.vue'
 
 const routes = [
   { path: '/login', component: LoginView },
@@ -22,6 +23,7 @@ const routes = [
   { path: '/reviews', component: ReviewQueueView, meta: { requiresAuth: true } },
   { path: '/kpi', component: KpiDashboardView, meta: { requiresAuth: true } },
   { path: '/master', component: MasterDataView, meta: { requiresAuth: true } },
+  { path: '/master/chemicals', component: ChemicalMasterView, meta: { requiresAuth: true } },
   { path: '/access-control', component: AccessControlView, meta: { requiresAuth: true } },
   { path: '/admin/sql', component: AdminSqlToolView, meta: { requiresAuth: true, roles: ['SUPER_ADMIN', 'HK_CELL_ADMIN'] } }
 ]

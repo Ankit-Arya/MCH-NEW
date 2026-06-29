@@ -2,11 +2,12 @@
   <AppLayout>
     <section class="hero-panel card entry-hero">
       <div>
-        <h1>Inspection Entry Capture</h1>
-        <p class="hero-subtitle">Select only the area being inspected. Each saved entry belongs to the same inspection number, with its own attribute, sub-area, grade, evidence and capture metadata.</p>
+        <h1>{{ isChemicalKpi ? 'Chemical Quantity Inspection' : 'Inspection Entry Capture' }}</h1>
+        <p class="hero-subtitle">{{ isChemicalKpi ? 'Inspect station-wise Chemicals & Consumables by comparing required quantity with actual available quantity.' : 'Select only the area being inspected. Each saved entry belongs to the same inspection number, with its own attribute, sub-area, grade, evidence and capture metadata.' }}</p>
       </div>
       <div v-if="inspection" class="inspection-badges">
         <span class="badge blue">{{ inspection.inspection_no }}</span>
+        <span class="badge">{{ kpiLabel }}</span>
         <span class="badge" :class="statusClass">{{ inspection.status }}</span>
       </div>
     </section>
@@ -18,6 +19,27 @@
       <p>{{ loadError }}</p>
       <p class="muted">If this started after access-control mapping, confirm that the logged-in user has station access for this inspection. Admin can map it from Access Control.</p>
       <button class="btn btn-primary" @click="reloadPage">Retry</button>
+    </div>
+
+    <div v-else-if="isChemicalKpi" class="inspection-entry-layout section-gap">
+      <div class="card capture-card">
+        <div class="card-title"><div><h2>Add Chemical Quantity Entry</h2><p class="muted">Attribute: Supply & utilization of Chemicals & Consumables. Select chemical item, enter actual quantity, and save.</p></div></div>
+        <div v-if="canEdit" class="navigation-warning-card"><strong>Unsaved work warning</strong><span>Save chemical quantity entry before leaving. Browser back, refresh, close and menu navigation will ask for confirmation.</span></div>
+        <form class="chemical-form" @submit.prevent="saveChemicalEntry">
+          <label><span class="label">Chemical / Consumable</span><select class="input" v-model.number="chemicalForm.chemical_id" required @change="onChemicalChange"><option disabled value="">Select mapped chemical</option><option v-for="r in chemicalRequirements" :key="r.chemical_id" :value="r.chemical_id">{{ r.chemical_code }} — {{ r.chemical_name }}</option></select></label>
+          <div class="chemical-requirement-card"><strong>Required Quantity</strong><span>{{ selectedChemicalRequirement ? `${selectedChemicalRequirement.required_quantity} ${selectedChemicalRequirement.unit || ''}` : 'Select chemical first' }}</span></div>
+          <label><span class="label">Actual Quantity Available</span><input class="input" v-model.number="chemicalForm.actual_quantity" required type="number" min="0" step="0.01" /></label>
+          <div class="chemical-requirement-card"><strong>Difference</strong><span>{{ chemicalDifferenceText }}</span></div>
+          <label class="wide"><span class="label">Remarks</span><textarea class="input" v-model.trim="chemicalForm.remarks" rows="3" placeholder="Remarks about shortage/excess/condition"></textarea></label>
+          <EntryMetadataPreview :metadata="metadata" :error="gpsError" @capture-gps="captureGps" />
+          <p v-if="error" class="error">{{ error }}</p>
+          <div class="form-actions"><button class="btn btn-primary" type="submit" :disabled="saving || !canEdit || !chemicalForm.chemical_id">{{ saving ? 'Saving...' : 'Save Chemical Entry' }}</button><button class="btn btn-muted" type="button" @click="resetChemicalForm">Clear</button></div>
+        </form>
+      </div>
+      <div class="card">
+        <div class="card-title"><div><h2>Saved Chemical Entries</h2><p class="muted">Overall score: <strong>{{ chemicalSummary.score_percent }}%</strong>; shortfall: <strong>{{ chemicalSummary.shortfall_total }}</strong></p></div></div>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Chemical</th><th>Required</th><th>Actual</th><th>Diff</th><th>Availability</th><th>Remarks</th><th v-if="canEdit">Action</th></tr></thead><tbody><tr v-for="entry in chemicalEntries" :key="entry.id"><td>{{ entry.chemical_code }} — {{ entry.chemical_name }}</td><td>{{ entry.required_quantity }}</td><td>{{ entry.actual_quantity }}</td><td>{{ entry.difference_quantity }}</td><td>{{ entry.availability_percent }}%</td><td>{{ entry.remarks || '-' }}</td><td v-if="canEdit"><button class="btn btn-sm btn-outline" @click="editChemicalEntry(entry)">Edit</button><button class="btn btn-sm btn-outline danger-action" @click="deleteChemicalEntry(entry)">Delete</button></td></tr><tr v-if="!chemicalEntries.length"><td :colspan="canEdit ? 7 : 6" class="muted">No chemical quantity entries saved yet.</td></tr></tbody></table></div>
+      </div>
     </div>
 
     <div v-else class="inspection-entry-layout section-gap">
@@ -69,11 +91,11 @@
     <div v-if="!loading && !loadError" class="card submit-panel section-gap">
       <div>
         <h2>Submit Inspection</h2>
-        <p class="muted">You can submit with partial selected entries. Each saved entry must satisfy the mandatory photo count from master data.</p>
+        <p class="muted">{{ isChemicalKpi ? 'Submit after saving chemical quantity entries. Report will include required quantity, actual quantity, shortfall and remarks.' : 'You can submit with partial selected entries. Each saved entry must satisfy the mandatory photo count from master data.' }}</p>
       </div>
       <div class="submit-actions">
-        <button class="btn btn-muted" @click="loadEntries">Refresh Entries</button>
-        <button class="btn btn-primary" @click="submitInspection" :disabled="submitting || !entries.length || !canEdit">
+        <button class="btn btn-muted" @click="refreshCurrentEntries">Refresh Entries</button>
+        <button class="btn btn-primary" @click="submitInspection" :disabled="submitting || !canSubmitInspection || !canEdit">
           {{ submitting ? 'Submitting...' : 'Submit Inspection' }}
         </button>
       </div>
@@ -110,6 +132,10 @@ const gpsError = ref('')
 const entryFormRef = ref(null)
 const mediaPanelRef = ref(null)
 const metadata = reactive({ latitude: null, longitude: null, gps_accuracy: null, captured_at: null })
+const chemicalRequirements = ref([])
+const chemicalEntries = ref([])
+const chemicalSummary = ref({ required_total: 0, actual_total: 0, shortfall_total: 0, score_percent: 0 })
+const chemicalForm = reactive({ id: null, chemical_id: '', actual_quantity: 0, remarks: '' })
 
 const LEAVE_WARNING_MESSAGE = 'You are leaving this inspection capture page. Any unsaved selected area, remarks, GPS capture or photo/video selection will be lost. Saved entries already added will remain. Do you want to leave?'
 
@@ -125,6 +151,20 @@ const saveBlockedText = computed(() => {
   const current = selectedPhotoFiles.value.length
   return `Capture mandatory photos first (${current}/${requiredPhotoCount.value})`
 })
+const isChemicalKpi = computed(() => inspection.value?.kpi_category === 'KPI_CHEMICALS')
+const kpiLabel = computed(() => isChemicalKpi.value ? 'KPI Chemicals & Consumables' : 'KPI-6 Cleanliness')
+const selectedChemicalRequirement = computed(() => chemicalRequirements.value.find((r) => Number(r.chemical_id) === Number(chemicalForm.chemical_id)) || null)
+const chemicalDifferenceText = computed(() => {
+  const req = Number(selectedChemicalRequirement.value?.required_quantity || 0)
+  const actual = Number(chemicalForm.actual_quantity || 0)
+  const diff = actual - req
+  if (!selectedChemicalRequirement.value) return 'Select chemical first'
+  if (diff < 0) return `Shortfall ${Math.abs(diff).toFixed(2)} ${selectedChemicalRequirement.value.unit || ''}`
+  if (diff > 0) return `Excess ${diff.toFixed(2)} ${selectedChemicalRequirement.value.unit || ''}`
+  return 'No difference'
+})
+const canSubmitInspection = computed(() => isChemicalKpi.value ? chemicalEntries.value.length > 0 : entries.value.length > 0)
+
 const shouldWarnBeforeLeaving = computed(() => {
   if (loading.value || loadError.value || !inspection.value) return false
   return Boolean(canEdit.value)
@@ -303,11 +343,70 @@ async function deleteEntry(entry){
   await loadEntries()
 }
 
+
+async function loadChemicalEntries(){
+  const { data } = await api.get(`/kpi-chemicals/inspections/${route.params.id}/entries`)
+  chemicalEntries.value = data.items || []
+  chemicalSummary.value = data.summary || { required_total: 0, actual_total: 0, shortfall_total: 0, score_percent: 0 }
+}
+
+async function loadChemicalRequirements(){
+  chemicalRequirements.value = (await api.get(`/kpi-chemicals/inspections/${route.params.id}/requirements`)).data || []
+}
+
+function onChemicalChange(){
+  const existing = chemicalEntries.value.find((entry) => Number(entry.chemical_id) === Number(chemicalForm.chemical_id))
+  if (existing) editChemicalEntry(existing)
+}
+
+function resetChemicalForm(){
+  Object.assign(chemicalForm, { id: null, chemical_id: '', actual_quantity: 0, remarks: '' })
+}
+
+function editChemicalEntry(entry){
+  Object.assign(chemicalForm, { id: entry.id, chemical_id: entry.chemical_id, actual_quantity: entry.actual_quantity, remarks: entry.remarks || '' })
+}
+
+async function saveChemicalEntry(){
+  error.value = ''; message.value = ''
+  if (!canEdit.value) { error.value = 'This inspection is already submitted/locked'; return }
+  if (!selectedChemicalRequirement.value) { error.value = 'Select a station-mapped chemical first'; return }
+  saving.value = true
+  try {
+    const payload = {
+      chemical_id: Number(chemicalForm.chemical_id),
+      actual_quantity: Number(chemicalForm.actual_quantity || 0),
+      remarks: chemicalForm.remarks || null,
+      captured_latitude: metadata.latitude,
+      captured_longitude: metadata.longitude,
+      gps_accuracy: metadata.gps_accuracy,
+      captured_at: metadata.captured_at || nowIso(),
+    }
+    const { data } = await api.post(`/kpi-chemicals/inspections/${route.params.id}/entries`, payload)
+    await loadChemicalEntries()
+    resetChemicalForm()
+    message.value = `${data.chemical_name || 'Chemical'} quantity saved. Availability ${data.availability_percent}%.`
+  } catch(e) { error.value = apiErrorText(e, 'Unable to save chemical entry') }
+  finally { saving.value = false }
+}
+
+async function deleteChemicalEntry(entry){
+  if (!confirm(`Delete chemical entry for ${entry.chemical_name}?`)) return
+  await api.delete(`/kpi-chemicals/inspections/${route.params.id}/entries/${entry.id}`)
+  await loadChemicalEntries()
+}
+
+async function refreshCurrentEntries(){
+  if (isChemicalKpi.value) await loadChemicalEntries()
+  else await loadEntries()
+}
+
 async function submitInspection(){
   error.value = ''; message.value = ''
   submitting.value = true
   try {
-    const { data } = await api.post(`/inspections/${route.params.id}/submit`, { remarks: inspection.value?.remarks || null })
+    const submitUrl = isChemicalKpi.value ? `/kpi-chemicals/inspections/${route.params.id}/submit` : `/inspections/${route.params.id}/submit`
+    const { data } = await api.post(submitUrl, { remarks: inspection.value?.remarks || null })
     inspection.value = data
     message.value = 'Inspection submitted for review.'
   } catch(e) { error.value = apiErrorText(e, 'Unable to submit inspection') }
@@ -322,9 +421,14 @@ onMounted(async()=>{
     inspection.value = (await api.get(`/inspections/${route.params.id}`)).data
     const contractId = route.query.contract_id || inspection.value.contract_id
     const stationId = route.query.station_id || inspection.value.station_id
-    const check = (await api.get(`/inspections/checklist?contract_id=${contractId}&station_id=${stationId}`)).data
-    checklist.value = { attributes: check.attributes || [], grades: check.grades || check.grading_options || [] }
-    await loadEntries()
+    if (inspection.value.kpi_category === 'KPI_CHEMICALS') {
+      await loadChemicalRequirements()
+      await loadChemicalEntries()
+    } else {
+      const check = (await api.get(`/inspections/checklist?contract_id=${contractId}&station_id=${stationId}`)).data
+      checklist.value = { attributes: check.attributes || [], grades: check.grades || check.grading_options || [] }
+      await loadEntries()
+    }
     captureGps()
   } catch (e) {
     loadError.value = e.response?.data?.detail || 'Unable to load inspection form. Please check API logs and station access mapping.'
@@ -352,4 +456,9 @@ onBeforeUnmount(() => {
 .load-error-card { display:grid; gap:10px; max-width:760px; }
 .load-error-card h2 { margin:0; }
 .load-error-card p { margin:0; }
+.chemical-form { display:grid; gap:12px; }
+.chemical-form .wide { grid-column:1/-1; }
+.chemical-requirement-card { display:grid; gap:4px; border:1px solid #dbeafe; border-radius:14px; background:#eff6ff; color:#1e3a8a; padding:12px; }
+.form-actions { display:flex; gap:10px; flex-wrap:wrap; }
+.danger-action { color:#b91c1c; border-color:#fecaca; }
 </style>
