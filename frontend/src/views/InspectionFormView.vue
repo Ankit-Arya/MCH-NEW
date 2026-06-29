@@ -7,7 +7,7 @@
       </div>
       <div v-if="inspection" class="inspection-badges">
         <span class="badge blue">{{ inspection.inspection_no }}</span>
-        <span class="badge" :class="statusClass">{{ statusLabel(inspection.status) }}</span>
+        <span class="badge" :class="statusClass">{{ inspection.status }}</span>
       </div>
     </section>
 
@@ -20,86 +20,71 @@
       <button class="btn btn-primary" @click="reloadPage">Retry</button>
     </div>
 
-    <div v-else>
-      <section v-if="inspection?.status === 'RETURNED_FOR_CLARIFICATION'" class="card section-gap returned-banner">
-        <div>
-          <p class="eyebrow">Returned for clarification</p>
-          <h2>This inspection is open for correction and resubmission</h2>
-          <p class="muted">Add/delete entries, upload corrected evidence, then submit again to send it back to Line Manager review.</p>
-        </div>
-        <RouterLink class="btn btn-outline" to="/inspections/action-required">Back to Action Required</RouterLink>
-      </section>
-
-      <section v-if="inspection?.status === 'DRAFT'" class="card section-gap draft-banner">
-        <div>
-          <p class="eyebrow amber-text">Draft inspection</p>
-          <h2>Continue saved partial inspection</h2>
-          <p class="muted">Saved drafts remain editable until submitted. Complete mandatory evidence and submit when ready.</p>
-        </div>
-        <RouterLink class="btn btn-outline" to="/inspections/action-required">Action Required</RouterLink>
-      </section>
-
-      <div class="inspection-entry-layout section-gap">
-        <div class="card capture-card">
-          <div class="card-title">
-            <div>
-              <h2>Add Selected Area Entry</h2>
-              <p class="muted">Photo evidence is mandatory as per selected sub-area master data. Save Entry is unlocked only after the required photos are captured/selected.</p>
-            </div>
+    <div v-else class="inspection-entry-layout section-gap">
+      <div class="card capture-card">
+        <div class="card-title">
+          <div>
+            <h2>Add Selected Area Entry</h2>
+            <p class="muted">Photo evidence is mandatory as per selected sub-area master data. Save Entry is unlocked only after the required photos are captured/selected.</p>
           </div>
-
-          <EntryCaptureForm
-            ref="entryFormRef"
-            :attributes="checklist.attributes"
-            :grades="checklist.grades"
-            :sub-areas="subAreas"
-            :loading-sub-areas="loadingSubAreas"
-            :saving="saving"
-            :error="error"
-            :can-save="canSaveCurrentEntry"
-            :save-blocked-text="saveBlockedText"
-            @attribute-change="loadSubAreas"
-            @sub-area-change="onSubAreaChange"
-            @save="saveEntry"
-            @clear="clearMedia"
-          >
-            <template #media="{ photoMinRequired, photoMaxAllowed }">
-              <MediaCapturePanel
-                ref="mediaPanelRef"
-                :photo-min-required="photoMinRequired"
-                :photo-max-allowed="photoMaxAllowed"
-                @change="media = $event"
-              />
-            </template>
-            <template #metadata>
-              <EntryMetadataPreview :metadata="metadata" :error="gpsError" @capture-gps="captureGps" />
-            </template>
-          </EntryCaptureForm>
         </div>
 
-        <SavedEntriesList :entries="entries" :can-edit="canEdit" @delete="deleteEntry" />
+        <div v-if="canEdit" class="navigation-warning-card">
+          <strong>Unsaved work warning</strong>
+          <span>Use Submit Inspection or Save Entry before leaving. Browser back, refresh, close and menu navigation will ask for confirmation.</span>
+        </div>
+
+        <EntryCaptureForm
+          ref="entryFormRef"
+          :attributes="checklist.attributes"
+          :grades="checklist.grades"
+          :sub-areas="subAreas"
+          :loading-sub-areas="loadingSubAreas"
+          :saving="saving"
+          :error="error"
+          :can-save="canSaveCurrentEntry"
+          :save-blocked-text="saveBlockedText"
+          @attribute-change="loadSubAreas"
+          @sub-area-change="onSubAreaChange"
+          @save="saveEntry"
+          @clear="clearMedia"
+        >
+          <template #media="{ photoMinRequired, photoMaxAllowed }">
+            <MediaCapturePanel
+              ref="mediaPanelRef"
+              :photo-min-required="photoMinRequired"
+              :photo-max-allowed="photoMaxAllowed"
+              @change="media = $event"
+            />
+          </template>
+          <template #metadata>
+            <EntryMetadataPreview :metadata="metadata" :error="gpsError" @capture-gps="captureGps" />
+          </template>
+        </EntryCaptureForm>
       </div>
 
-      <div class="card submit-panel section-gap">
-        <div>
-          <h2>{{ inspection?.status === 'RETURNED_FOR_CLARIFICATION' ? 'Resubmit Corrected Inspection' : 'Submit Inspection' }}</h2>
-          <p class="muted">You can submit with partial selected entries. Each saved entry must satisfy the mandatory photo count from master data.</p>
-        </div>
-        <div class="submit-actions">
-          <button class="btn btn-muted" @click="loadEntries">Refresh Entries</button>
-          <button class="btn btn-primary" @click="submitInspection" :disabled="submitting || !entries.length || !canEdit">
-            {{ submitting ? 'Submitting...' : inspection?.status === 'RETURNED_FOR_CLARIFICATION' ? 'Resubmit Inspection' : 'Submit Inspection' }}
-          </button>
-        </div>
-        <p v-if="message" class="success-text">{{ message }}</p>
+      <SavedEntriesList :entries="entries" :can-edit="canEdit" @delete="deleteEntry" />
+    </div>
+
+    <div v-if="!loading && !loadError" class="card submit-panel section-gap">
+      <div>
+        <h2>Submit Inspection</h2>
+        <p class="muted">You can submit with partial selected entries. Each saved entry must satisfy the mandatory photo count from master data.</p>
       </div>
+      <div class="submit-actions">
+        <button class="btn btn-muted" @click="loadEntries">Refresh Entries</button>
+        <button class="btn btn-primary" @click="submitInspection" :disabled="submitting || !entries.length || !canEdit">
+          {{ submitting ? 'Submitting...' : 'Submit Inspection' }}
+        </button>
+      </div>
+      <p v-if="message" class="success-text">{{ message }}</p>
     </div>
   </AppLayout>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { onBeforeRouteLeave, useRoute } from 'vue-router'
 import AppLayout from '../components/AppLayout.vue'
 import EntryCaptureForm from '../components/EntryCaptureForm.vue'
 import EntryMetadataPreview from '../components/EntryMetadataPreview.vue'
@@ -126,8 +111,10 @@ const entryFormRef = ref(null)
 const mediaPanelRef = ref(null)
 const metadata = reactive({ latitude: null, longitude: null, gps_accuracy: null, captured_at: null })
 
+const LEAVE_WARNING_MESSAGE = 'You are leaving this inspection capture page. Any unsaved selected area, remarks, GPS capture or photo/video selection will be lost. Saved entries already added will remain. Do you want to leave?'
+
 const canEdit = computed(() => ['DRAFT', 'RETURNED_FOR_CLARIFICATION'].includes(inspection.value?.status))
-const statusClass = computed(() => inspection.value?.status === 'RETURNED_FOR_CLARIFICATION' ? 'red' : inspection.value?.status === 'DRAFT' ? 'amber' : 'green')
+const statusClass = computed(() => ['DRAFT', 'RETURNED_FOR_CLARIFICATION'].includes(inspection.value?.status) ? 'amber' : 'green')
 const selectedPhotoFiles = computed(() => getPhotoFiles())
 const requiredPhotoCount = computed(() => Math.max(1, Number(selectedSubArea.value?.photo_min_required || 1)))
 const maxPhotoCount = computed(() => Math.max(requiredPhotoCount.value, Number(selectedSubArea.value?.photo_max_allowed || 3)))
@@ -138,22 +125,13 @@ const saveBlockedText = computed(() => {
   const current = selectedPhotoFiles.value.length
   return `Capture mandatory photos first (${current}/${requiredPhotoCount.value})`
 })
+const shouldWarnBeforeLeaving = computed(() => {
+  if (loading.value || loadError.value || !inspection.value) return false
+  return Boolean(canEdit.value)
+})
 
 function nowIso(){ return new Date().toISOString() }
 function reloadPage(){ window.location.reload() }
-function statusLabel(status) {
-  const labels = {
-    DRAFT: 'DRAFT - INCOMPLETE',
-    RETURNED_FOR_CLARIFICATION: 'RETURNED FOR CLARIFICATION',
-    UNDER_LINE_MANAGER_REVIEW: 'SUBMITTED TO LINE MANAGER',
-    LINE_MANAGER_RECOMMENDED: 'APPROVED BY LINE MANAGER',
-    DGM_APPROVED: 'APPROVED BY DGM',
-    DGM_REJECTED: 'REJECTED BY DGM',
-    GM_REVIEW_REQUIRED: 'SENT TO GM/OPS',
-    GM_REVIEWED: 'REVIEWED BY GM/OPS'
-  }
-  return labels[status] || String(status || '-').replaceAll('_', ' ')
-}
 
 function getPhotoFiles(){
   if (Array.isArray(media.value?.photos)) return media.value.photos
@@ -168,6 +146,21 @@ function onSubAreaChange(subArea){
   selectedSubArea.value = subArea
   clearMedia()
 }
+
+function confirmLeaveInspectionPage(){
+  if (!shouldWarnBeforeLeaving.value) return true
+  if (typeof window === 'undefined') return true
+  return window.confirm(LEAVE_WARNING_MESSAGE)
+}
+
+function beforeUnloadHandler(event){
+  if (!shouldWarnBeforeLeaving.value) return
+  event.preventDefault()
+  event.returnValue = LEAVE_WARNING_MESSAGE
+  return LEAVE_WARNING_MESSAGE
+}
+
+onBeforeRouteLeave(() => confirmLeaveInspectionPage())
 
 function captureGps(){
   gpsError.value = ''
@@ -196,6 +189,8 @@ async function loadEntries(){
 }
 
 function appendOptionalFormValue(fd, key, value){
+  // Do not send empty strings for optional numeric/date fields.
+  // FastAPI can reject blank multipart fields before the endpoint runs.
   if (value === null || value === undefined || value === '') return
   fd.append(key, String(value))
 }
@@ -222,6 +217,8 @@ async function uploadFile(entryId, file, mediaType){
   appendOptionalFormValue(fd, 'gps_accuracy', metadata.gps_accuracy)
   appendOptionalFormValue(fd, 'captured_at', metadata.captured_at || nowIso())
   fd.append('file', file, file.name || `${mediaType.toLowerCase()}-${Date.now()}`)
+
+  // Let the browser/axios set the multipart boundary automatically.
   await api.post(`/inspections/${route.params.id}/entries/${entryId}/media`, fd)
 }
 
@@ -242,6 +239,7 @@ async function saveEntry(form){
 
   saving.value = true
   let uploadFailed = false
+
   try {
     const payload = {
       attribute_id: form.attribute_id,
@@ -253,29 +251,45 @@ async function saveEntry(form){
       gps_accuracy: metadata.gps_accuracy,
       captured_at: metadata.captured_at || nowIso(),
     }
+
     const { data: entry } = await api.post(`/inspections/${route.params.id}/entries`, payload)
+
     try {
       for (let index = 0; index < photos.length; index += 1) {
-        try { await uploadFile(entry.id, photos[index], 'PHOTO') }
-        catch (photoUploadError) { photoUploadError.uploadLabel = `Photo ${index + 1}`; throw photoUploadError }
+        try {
+          await uploadFile(entry.id, photos[index], 'PHOTO')
+        } catch (photoUploadError) {
+          photoUploadError.uploadLabel = `Photo ${index + 1}`
+          throw photoUploadError
+        }
       }
       if (media.value.video) {
-        try { await uploadFile(entry.id, media.value.video, 'VIDEO') }
-        catch (videoUploadError) { videoUploadError.uploadLabel = 'Video'; throw videoUploadError }
+        try {
+          await uploadFile(entry.id, media.value.video, 'VIDEO')
+        } catch (videoUploadError) {
+          videoUploadError.uploadLabel = 'Video'
+          throw videoUploadError
+        }
       }
     } catch (uploadError) {
       uploadFailed = true
+      // Avoid orphan entries without complete mandatory photo evidence.
       try { await api.delete(`/inspections/${route.params.id}/entries/${entry.id}`) } catch (_) {}
       throw uploadError
     }
+
     await loadEntries()
     clearMedia()
     entryFormRef.value?.resetForm()
     message.value = `${entry.entry_no} saved with ${photos.length} photo${photos.length === 1 ? '' : 's'}${hadVideo ? ' and video' : ''}.`
   } catch (e) {
     const reason = `${e.uploadLabel ? e.uploadLabel + ': ' : ''}${apiErrorText(e, 'Unable to save entry')}`
-    error.value = uploadFailed ? `Evidence upload failed, so the entry was not saved. Reason: ${reason}` : reason
-  } finally { saving.value = false }
+    error.value = uploadFailed
+      ? `Evidence upload failed, so the entry was not saved. Reason: ${reason}`
+      : reason
+  } finally {
+    saving.value = false
+  }
 }
 
 function clearMedia(){
@@ -301,6 +315,7 @@ async function submitInspection(){
 }
 
 onMounted(async()=>{
+  if (typeof window !== 'undefined') window.addEventListener('beforeunload', beforeUnloadHandler)
   loading.value = true
   loadError.value = ''
   try {
@@ -313,7 +328,13 @@ onMounted(async()=>{
     captureGps()
   } catch (e) {
     loadError.value = e.response?.data?.detail || 'Unable to load inspection form. Please check API logs and station access mapping.'
-  } finally { loading.value = false }
+  } finally {
+    loading.value = false
+  }
+})
+
+onBeforeUnmount(() => {
+  if (typeof window !== 'undefined') window.removeEventListener('beforeunload', beforeUnloadHandler)
 })
 </script>
 
@@ -325,14 +346,9 @@ onMounted(async()=>{
 .submit-panel { display:flex; justify-content:space-between; gap:14px; align-items:center; }
 .submit-actions { display:flex; gap:10px; flex-wrap:wrap; }
 .success-text { color:#166534; font-weight:900; margin:0; }
-.returned-banner, .draft-banner { display:flex; justify-content:space-between; gap:14px; align-items:flex-start; border-left:5px solid #ef4444; }
-.draft-banner { border-left-color:#f59e0b; }
-.returned-banner h2, .draft-banner h2 { margin:0 0 6px; }
-.returned-banner p, .draft-banner p { margin:0; }
-.eyebrow { margin:0 0 5px; color:#991b1b; font-weight:1000; letter-spacing:.08em; text-transform:uppercase; font-size:12px; }
-.amber-text { color:#92400e; }
-.badge.red { background:#fee2e2; color:#991b1b; }
-@media(max-width:1080px){ .inspection-entry-layout{grid-template-columns:1fr;} .capture-card{position:relative; top:auto;} .entry-hero,.submit-panel,.returned-banner,.draft-banner{display:grid;} }
+.navigation-warning-card { display:grid; gap:4px; margin:0 0 14px; border:1px solid #fed7aa; border-radius:16px; background:#fff7ed; color:#9a3412; padding:12px 14px; font-size:0.9rem; line-height:1.45; }
+.navigation-warning-card strong { color:#7c2d12; }
+@media(max-width:1080px){ .inspection-entry-layout{grid-template-columns:1fr;} .capture-card{position:relative; top:auto;} .entry-hero,.submit-panel{display:grid;} }
 .load-error-card { display:grid; gap:10px; max-width:760px; }
 .load-error-card h2 { margin:0; }
 .load-error-card p { margin:0; }

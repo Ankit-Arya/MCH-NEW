@@ -230,9 +230,22 @@ function handleKeydown(event) {
 }
 function handleResize() { if (window.innerWidth > 820) closeMobileMenu() }
 
+const LOGIN_SESSION_KEY = 'mch-login-session-id'
+
+function ensureLoginSessionId() {
+  if (typeof sessionStorage === 'undefined') return 'browser-session'
+  let loginSessionId = sessionStorage.getItem(LOGIN_SESSION_KEY)
+  if (!loginSessionId) {
+    loginSessionId = `restored-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    sessionStorage.setItem(LOGIN_SESSION_KEY, loginSessionId)
+  }
+  return loginSessionId
+}
+
 function sessionKey(prefix, user) {
   if (!user?.id && !user?.username && !user?.role) return ''
-  return `${prefix}:${user.id || user.username || 'user'}:${user.role}`
+  const loginSessionId = ensureLoginSessionId()
+  return `${prefix}:${loginSessionId}:${user.id || user.username || 'user'}:${user.role}`
 }
 function pendingReviewSessionKey(user) { return sessionKey('mch-pending-review-popup', user) }
 function actionRequiredSessionKey(user) { return sessionKey('mch-action-required-popup', user) }
@@ -259,10 +272,8 @@ async function checkPendingReviewsForUser(user) {
     const count = Number(data?.total || 0)
     pendingReviewNotice.count = count
     if (count > 0 && router.currentRoute.value.path !== '/reviews') pendingReviewNotice.open = true
-    if (count === 0) markNoticeChecked(key)
   } catch {
     pendingReviewNotice.count = 0
-    markNoticeChecked(key)
   } finally { pendingReviewNotice.loading = false }
 }
 
@@ -279,12 +290,10 @@ async function checkActionRequiredForUser(user) {
     actionRequiredNotice.draft = Number(data?.counts?.draft || 0)
     actionRequiredNotice.returned = Number(data?.counts?.returned || 0)
     if (count > 0 && router.currentRoute.value.path !== '/inspections/action-required') actionRequiredNotice.open = true
-    if (count === 0) markNoticeChecked(key)
   } catch {
     actionRequiredNotice.count = 0
     actionRequiredNotice.draft = 0
     actionRequiredNotice.returned = 0
-    markNoticeChecked(key)
   } finally { actionRequiredNotice.loading = false }
 }
 
