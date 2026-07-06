@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 from app.core.config import settings
@@ -42,7 +42,7 @@ from app.services.inspection_service import (
     submit_entry_based_inspection,
     submit_inspection,
 )
-from app.services.media_service import build_object_path, sha256_bytes, upload_bytes
+from app.services.media_service import build_object_path, prepare_evidence_media, sha256_bytes, upload_bytes
 from app.services.audit_service import audit_log
 from app.models.kpi_chemical import InspectionKpiContext, KPI_6_CLEANLINESS, KPI_CHEMICALS
 
@@ -54,6 +54,27 @@ ACTION_REQUIRED_STATUSES = {
     InspectionStatus.RETURNED_FOR_CLARIFICATION,
 }
 ALLOWED_KPI_CATEGORIES = {KPI_6_CLEANLINESS, KPI_CHEMICALS}
+SUBMITTED_WEEKLY_STATUSES = {
+    InspectionStatus.UNDER_LINE_MANAGER_REVIEW,
+    InspectionStatus.LINE_MANAGER_RECOMMENDED,
+    InspectionStatus.DGM_APPROVED,
+    InspectionStatus.DGM_REJECTED,
+    InspectionStatus.GM_REVIEW_REQUIRED,
+    InspectionStatus.GM_REVIEWED,
+    InspectionStatus.CLOSED,
+}
+WEEKLY_INSPECTION_TARGETS = {
+    RoleCode.STATION_MANAGER: {
+        "required": 3,
+        "label": "Station Manager weekly inspection target",
+        "role_label": "SM",
+    },
+    RoleCode.EIT_MEMBER: {
+        "required": 1,
+        "label": "EIT weekly inspection target",
+        "role_label": "EIT",
+    },
+}
 
 
 def _kpi_category_for(db: Session, inspection_id: int) -> str:
@@ -181,6 +202,80 @@ def _inspection_type_for_user(user: User) -> InspectionType:
     if code == RoleCode.EIT_MEMBER:
         return InspectionType.EIT_INSPECTION
     return InspectionType.SPECIAL_INSPECTION
+
+
+def _current_week_window(today: date | None = None) -> tuple[date, date]:
+    """Return Monday-Sunday date range for weekly inspection target checks."""
+
+    current = today or date.today()
+    week_start = current - timedelta(days=current.weekday())
+    week_end = week_start + timedelta(days=6)
+    return week_start, week_end
+
+
+def _weekly_target_summary(db: Session, user: User) -> dict:
+    role_code = user.role.code if user and user.role else None
+    target = WEEKLY_INSPECTION_TARGETS.get(role_code)
+    week_start, week_end = _current_week_window()
+
+    if not target:
+        return {
+            "applies": False,
+            "week_start": week_start.isoformat(),
+            "week_end": week_end.isoformat(),
+            "required": 0,
+            "completed": 0,
+            "remaining": 0,
+            "is_complete": True,
+            "role_label": user.role.code.value if user.role else None,
+            "message": "No weekly self-inspection target is configured for this role.",
+        }
+
+    required = int(target["required"])
+    completed = (
+        db.query(Inspection)
+        .filter(
+            Inspection.submitted_by == user.id,
+            Inspection.inspection_date >= week_start,
+            Inspection.inspection_date <= week_end,
+            Inspection.status.in_(SUBMITTED_WEEKLY_STATUSES),
+        )
+        .count()
+    )
+    remaining = max(0, required - completed)
+    is_complete = completed >= required
+    role_label = str(target["role_label"])
+
+    return {
+        "applies": True,
+        "label": target["label"],
+        "role_label": role_label,
+        "week_start": week_start.isoformat(),
+        "week_end": week_end.isoformat(),
+        "required": required,
+        "completed": completed,
+        "remaining": remaining,
+        "is_complete": is_complete,
+        "message": (
+            f"{role_label} weekly target completed ({completed}/{required})."
+            if is_complete
+            else f"{role_label} weekly target pending: {remaining} more inspection(s) required ({completed}/{required} done)."
+        ),
+    }
+
+
+def _action_required_counts(db: Session, user: User) -> dict:
+    query = db.query(Inspection).filter(
+        Inspection.submitted_by == user.id,
+        Inspection.status.in_([InspectionStatus.DRAFT, InspectionStatus.RETURNED_FOR_CLARIFICATION]),
+    )
+    draft = query.filter(Inspection.status == InspectionStatus.DRAFT).count()
+    returned = query.filter(Inspection.status == InspectionStatus.RETURNED_FOR_CLARIFICATION).count()
+    return {
+        "total": draft + returned,
+        "draft": draft,
+        "returned": returned,
+    }
 
 
 def _explicit_user_station_ids(db: Session, user: User) -> set[int]:
@@ -328,6 +423,24 @@ def action_required_inspections(
     }
 
 
+@router.get("/login-notification-summary")
+def login_notification_summary(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Compact login notification payload for inspector weekly targets and action items.
+
+    SM/EIT users receive their weekly inspection completion status plus any draft or
+    returned inspections. Reviewer roles continue to use /reviews/pending for their
+    queue count, but this endpoint remains safe for every role.
+    """
+
+    weekly_target = _weekly_target_summary(db, user)
+    action_required = _action_required_counts(db, user)
+    return {
+        "current_role": user.role.code.value if user.role else None,
+        "weekly_target": weekly_target,
+        "action_required": action_required,
+    }
+
+
 @router.get("/start-options")
 def start_options(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Options for Start Inspection.
@@ -465,9 +578,21 @@ async def upload_entry_media(
 
     data = await file.read()
     _validate_upload_file(media_type, file, data)
-    checksum = sha256_bytes(data)
+
+    effective_captured_at = captured_at or datetime.utcnow()
+    stamped_data, stamped_content_type = prepare_evidence_media(
+        media_type=media_type,
+        data=data,
+        content_type=file.content_type,
+        captured_at=effective_captured_at,
+        captured_latitude=captured_latitude,
+        captured_longitude=captured_longitude,
+        gps_accuracy=gps_accuracy,
+    )
+
+    checksum = sha256_bytes(stamped_data)
     object_path = build_object_path(inspection.contract_id, inspection.station_id, inspection.id, f"entry-{entry.id}-{file.filename or 'upload.bin'}")
-    upload_bytes(object_path, data, file.content_type)
+    upload_bytes(object_path, stamped_data, stamped_content_type or file.content_type)
     row = InspectionMedia(
         inspection_id=inspection.id,
         inspection_entry_id=entry.id,
@@ -476,13 +601,13 @@ async def upload_entry_media(
         media_type=media_type,
         object_path=object_path,
         original_file_name=file.filename or "upload.bin",
-        mime_type=file.content_type,
-        file_size=len(data),
+        mime_type=stamped_content_type or file.content_type,
+        file_size=len(stamped_data),
         checksum=checksum,
         captured_latitude=captured_latitude,
         captured_longitude=captured_longitude,
         gps_accuracy=gps_accuracy,
-        captured_at=captured_at,
+        captured_at=effective_captured_at,
         uploaded_by=user.id,
         processing_status="UPLOADED",
     )
@@ -540,9 +665,21 @@ async def upload_media_legacy(
 
     data = await file.read()
     _validate_upload_file(media_type, file, data)
-    checksum = sha256_bytes(data)
+
+    effective_captured_at = captured_at or datetime.utcnow()
+    stamped_data, stamped_content_type = prepare_evidence_media(
+        media_type=media_type,
+        data=data,
+        content_type=file.content_type,
+        captured_at=effective_captured_at,
+        captured_latitude=captured_latitude,
+        captured_longitude=captured_longitude,
+        gps_accuracy=gps_accuracy,
+    )
+
+    checksum = sha256_bytes(stamped_data)
     object_path = build_object_path(inspection.contract_id, inspection.station_id, inspection.id, file.filename or "upload.bin")
-    upload_bytes(object_path, data, file.content_type)
+    upload_bytes(object_path, stamped_data, stamped_content_type or file.content_type)
     row = InspectionMedia(
         inspection_id=inspection.id,
         attribute_id=attribute_id,
@@ -550,13 +687,13 @@ async def upload_media_legacy(
         media_type=media_type,
         object_path=object_path,
         original_file_name=file.filename or "upload.bin",
-        mime_type=file.content_type,
-        file_size=len(data),
+        mime_type=stamped_content_type or file.content_type,
+        file_size=len(stamped_data),
         checksum=checksum,
         captured_latitude=captured_latitude,
         captured_longitude=captured_longitude,
         gps_accuracy=gps_accuracy,
-        captured_at=captured_at,
+        captured_at=effective_captured_at,
         uploaded_by=user.id,
         processing_status="UPLOADED",
     )

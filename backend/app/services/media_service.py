@@ -142,7 +142,7 @@ def build_evidence_stamp_lines(
 ) -> list[str]:
     """Return compact text that can be stamped directly on photos/videos."""
 
-    lines = [f"Captured: {_format_captured_at(captured_at)}"]
+    lines = ["MCH INSPECTION EVIDENCE", f"Captured: {_format_captured_at(captured_at)}"]
 
     lat = _format_coordinate(captured_latitude)
     lon = _format_coordinate(captured_longitude)
@@ -154,6 +154,8 @@ def build_evidence_stamp_lines(
             except (TypeError, ValueError):
                 pass
         lines.append(gps_text)
+    else:
+        lines.append("GPS: not available / permission denied")
 
     return lines
 

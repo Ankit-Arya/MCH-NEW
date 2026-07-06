@@ -324,24 +324,15 @@ def _build_report_header(styles, title: str, subtitle: str | None = None) -> Tab
     ]))
     return header
 
-def _format_inspection_date_time(inspection: Inspection) -> str:
-    if inspection.inspection_date and inspection.submitted_at:
-        return f"{inspection.inspection_date.strftime('%d-%m-%Y')} {inspection.submitted_at.strftime('%H:%M')}"
-    if inspection.inspection_date:
-        return inspection.inspection_date.strftime("%d-%m-%Y")
-    if inspection.submitted_at:
-        return inspection.submitted_at.strftime("%d-%m-%Y %H:%M")
-    return "-"
-
 
 def _build_metadata_table(inspection: Inspection, styles) -> Table:
     metadata = [
         [
             Paragraph("Inspection No", styles["MetaLabel"]),
             Paragraph(f"<b>{_safe_text(inspection.inspection_no)}</b>", styles["MetaValue"]),
-            Paragraph("Inspection Date &amp; Time", styles["MetaLabel"]),
+            Paragraph("Inspection Date", styles["MetaLabel"]),
             Paragraph(
-                f"<b>{_safe_text(_format_inspection_date_time(inspection))}</b>",
+                f"<b>{_safe_text(inspection.inspection_date.strftime('%d-%m-%Y') if inspection.inspection_date else '-')}</b>",
                 styles["MetaValue"],
             ),
         ],
@@ -428,6 +419,13 @@ def _query_inspections(
         db,
         user,
     )
+
+    # Draft inspections are unfinished work and now belong only to the
+    # Action Required tab. Do not include them in report search results or
+    # filtered PDF registers for any role. If a stale frontend/client sends
+    # status=DRAFT, this base filter still returns no rows.
+    q = q.filter(Inspection.status != InspectionStatus.DRAFT)
+
     if from_date:
         q = q.filter(Inspection.inspection_date >= from_date)
     if to_date:
@@ -623,7 +621,7 @@ def _review_action_label(action_value: str | None) -> str:
     labels = {
         "COMMENT": "Comment",
         "RETURN_FOR_CLARIFICATION": "Returned for clarification",
-        "RECOMMEND_PENALTY": "Forwarded /Recommended",
+        "RECOMMEND_PENALTY": "Forwarded / recommended",
         "APPROVE": "Approved",
         "REJECT": "Rejected",
         "SEND_TO_GM": "Forwarded to GM/Ops",
@@ -825,6 +823,11 @@ def inspection_pdf(inspection_id: int, request: Request, db: Session = Depends(g
     if not inspection:
         raise HTTPException(status_code=404, detail="Inspection not found")
     require_inspection_access(db, user, inspection)
+    if inspection.status == InspectionStatus.DRAFT:
+        raise HTTPException(
+            status_code=400,
+            detail="Draft inspections are available under Action Required and cannot be printed as reports until submitted.",
+        )
 
     buffer = BytesIO()
     styles = _configure_pdf_styles()
