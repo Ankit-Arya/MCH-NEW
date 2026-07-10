@@ -23,6 +23,21 @@ from app.services.audit_service import audit_log
 
 router = APIRouter()
 
+REPORTING_RELATION = "REPORTING"
+SM_STATION_OWNER_ROLES = {RoleCode.STATION_MANAGER}
+STATION_ONLY_ROLES = {RoleCode.STATION_MANAGER, RoleCode.EIT_MEMBER}
+
+# Operational hierarchy is intentionally single-parent per user:
+# GM/Ops -> DGM(s) -> LM(s) -> SM/EIT(s). Higher users can have many children,
+# but every child must have exactly one active operational supervisor.
+ALLOWED_CHILD_ROLES_BY_SUPERVISOR_ROLE: dict[RoleCode, set[RoleCode]] = {
+    RoleCode.GM_OPS: {RoleCode.DGM_LINE, RoleCode.DGM_HK},
+    RoleCode.DGM_LINE: {RoleCode.AM_MGR_LINE, RoleCode.AM_MGR_HK},
+    RoleCode.DGM_HK: {RoleCode.AM_MGR_LINE, RoleCode.AM_MGR_HK},
+    RoleCode.AM_MGR_LINE: {RoleCode.STATION_MANAGER, RoleCode.EIT_MEMBER},
+    RoleCode.AM_MGR_HK: {RoleCode.STATION_MANAGER, RoleCode.EIT_MEMBER},
+}
+
 
 def _require_manage(user: User) -> None:
     require_roles(user, MASTER_ADMIN_ROLES)
@@ -38,6 +53,30 @@ def _user_row(user: User) -> dict[str, Any]:
         "role": user.role.code.value if user.role else None,
         "is_active": user.is_active,
     }
+
+
+def _role_code(user: User) -> RoleCode | None:
+    return user.role.code if user and user.role else None
+
+
+def _role_label(role: RoleCode | None) -> str:
+    labels = {
+        RoleCode.SUPER_ADMIN: "Super Admin",
+        RoleCode.HK_CELL_ADMIN: "HK Cell Admin",
+        RoleCode.GM_OPS: "GM/Ops",
+        RoleCode.DGM_LINE: "DGM Line",
+        RoleCode.DGM_HK: "DGM HK",
+        RoleCode.AM_MGR_LINE: "Line Manager",
+        RoleCode.AM_MGR_HK: "HK Manager",
+        RoleCode.STATION_MANAGER: "Station Manager",
+        RoleCode.EIT_MEMBER: "External Inspection Team",
+        RoleCode.AUDITOR: "Auditor",
+    }
+    return labels.get(role, role.value if role else "Unknown")
+
+
+def _can_supervise(supervisor: User) -> bool:
+    return _role_code(supervisor) in ALLOWED_CHILD_ROLES_BY_SUPERVISOR_ROLE
 
 
 def _ensure_user(db: Session, user_id: int) -> User:
@@ -57,6 +96,126 @@ def _ensure_no_reporting_cycle(db: Session, supervisor_user_id: int, subordinate
         raise HTTPException(status_code=422, detail="Reporting hierarchy cycle detected")
 
 
+def _station_manager_conflict_rows(db: Session, target: User, station_ids: set[int]):
+    if not station_ids or _role_code(target) not in SM_STATION_OWNER_ROLES:
+        return []
+
+    return (
+        db.query(
+            UserStationAccess.station_id,
+            Station.station_name,
+            User.id.label("user_id"),
+            User.name,
+            User.username,
+        )
+        .join(Station, Station.id == UserStationAccess.station_id)
+        .join(User, User.id == UserStationAccess.user_id)
+        .filter(
+            UserStationAccess.station_id.in_(station_ids),
+            UserStationAccess.user_id != target.id,
+            UserStationAccess.is_active.is_(True),
+            User.is_active.is_(True),
+            User.role.has(code=RoleCode.STATION_MANAGER),
+        )
+        .order_by(Station.station_name, User.name)
+        .all()
+    )
+
+
+def _ensure_single_station_manager_per_station(db: Session, target: User, station_ids: set[int]) -> None:
+    conflicts = _station_manager_conflict_rows(db, target, station_ids)
+    if not conflicts:
+        return
+
+    messages = []
+    for row in conflicts[:6]:
+        messages.append(f"{row.station_name} is already mapped to SM {row.name} ({row.username})")
+    extra = "" if len(conflicts) <= 6 else f" and {len(conflicts) - 6} more"
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            "Station-to-SM mapping must be unique. One station can be allotted to only one active SM. "
+            + "; ".join(messages)
+            + extra
+        ),
+    )
+
+
+def _ensure_station_only_role_does_not_have_line_access(target: User, line_ids: set[int]) -> None:
+    if _role_code(target) in STATION_ONLY_ROLES and line_ids:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{_role_label(_role_code(target))} must be mapped station-wise only. "
+                "Do not assign line access to SM/EIT users; select the specific stations instead."
+            ),
+        )
+
+
+def _ensure_valid_reporting_chain(db: Session, supervisor: User, subordinate_ids: set[int]) -> list[User]:
+    supervisor_role = _role_code(supervisor)
+    allowed_child_roles = ALLOWED_CHILD_ROLES_BY_SUPERVISOR_ROLE.get(supervisor_role)
+
+    if not allowed_child_roles:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Invalid operational supervisor. Use only this hierarchy: "
+                "GM/Ops -> DGM -> Line Manager -> SM/EIT. "
+                "Super Admin/HK Cell can manage mappings but should not be placed inside the operational reporting chain."
+            ),
+        )
+
+    subordinates: list[User] = []
+    for subordinate_id in subordinate_ids:
+        subordinate = _ensure_user(db, subordinate_id)
+        subordinate_role = _role_code(subordinate)
+        if subordinate_role not in allowed_child_roles:
+            expected = ", ".join(_role_label(role) for role in sorted(allowed_child_roles, key=lambda role: role.value))
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Invalid hierarchy mapping: {_role_label(supervisor_role)} can supervise only {expected}. "
+                    f"{subordinate.name} is {_role_label(subordinate_role)}."
+                ),
+            )
+        _ensure_no_reporting_cycle(db, supervisor.id, subordinate.id)
+        subordinates.append(subordinate)
+
+    return subordinates
+
+
+def _deactivate_other_active_parents(
+    db: Session,
+    *,
+    supervisor_user_id: int,
+    subordinate_ids: set[int],
+    relation_type: str,
+) -> int:
+    """Move each selected child under this supervisor by disabling any other active parent.
+
+    This fixes the logical issue where the same SM could remain under multiple LMs,
+    or the same LM could remain under multiple DGMs.
+    """
+
+    if not subordinate_ids:
+        return 0
+
+    rows = (
+        db.query(UserSupervisorAccess)
+        .filter(
+            UserSupervisorAccess.subordinate_user_id.in_(subordinate_ids),
+            UserSupervisorAccess.supervisor_user_id != supervisor_user_id,
+            UserSupervisorAccess.relation_type == relation_type,
+            UserSupervisorAccess.is_active.is_(True),
+        )
+        .all()
+    )
+    for row in rows:
+        row.is_active = False
+    return len(rows)
+
+
 def _replace_station_access(db: Session, payload: StationAccessUpdate, actor: User) -> dict[str, Any]:
     target = _ensure_user(db, payload.user_id)
     station_ids = set(payload.station_ids or [])
@@ -65,6 +224,8 @@ def _replace_station_access(db: Session, payload: StationAccessUpdate, actor: Us
         missing = station_ids - existing_station_ids
         if missing:
             raise HTTPException(status_code=404, detail=f"Station id(s) not found: {sorted(missing)}")
+
+    _ensure_single_station_manager_per_station(db, target, station_ids)
 
     existing_rows = db.query(UserStationAccess).filter(UserStationAccess.user_id == target.id).all()
     existing_by_station = {row.station_id: row for row in existing_rows}
@@ -90,6 +251,8 @@ def _replace_station_access(db: Session, payload: StationAccessUpdate, actor: Us
 def _replace_line_access(db: Session, payload: LineAccessUpdate, actor: User) -> dict[str, Any]:
     target = _ensure_user(db, payload.user_id)
     line_ids = set(payload.line_ids or [])
+    _ensure_station_only_role_does_not_have_line_access(target, line_ids)
+
     if line_ids:
         existing_line_ids = {row.id for row in db.query(Line.id).filter(Line.id.in_(line_ids)).all()}
         missing = line_ids - existing_line_ids
@@ -153,6 +316,15 @@ def bootstrap(db: Session = Depends(get_db), user: User = Depends(get_current_us
             }
             for row in reporting_links
         ],
+        "hierarchy_rules": {
+            "chain": "GM/Ops -> DGM -> Line Manager -> SM/EIT",
+            "station_sm_rule": "One station can be mapped to only one active Station Manager. One SM can have multiple stations.",
+            "single_parent_rule": "Every SM/EIT has one LM, every LM has one DGM, every DGM has one GM/Ops.",
+            "allowed_child_roles_by_supervisor_role": {
+                role.value: sorted(child.value for child in child_roles)
+                for role, child_roles in ALLOWED_CHILD_ROLES_BY_SUPERVISOR_ROLE.items()
+            },
+        },
     }
 
 
@@ -199,16 +371,15 @@ def set_reporting_links(payload: ReportingAccessUpdate, db: Session = Depends(ge
     _require_manage(user)
     supervisor = _ensure_user(db, payload.supervisor_user_id)
     subordinate_ids = set(payload.subordinate_user_ids or [])
+    relation_type = payload.relation_type or REPORTING_RELATION
 
-    for subordinate_id in subordinate_ids:
-        _ensure_user(db, subordinate_id)
-        _ensure_no_reporting_cycle(db, supervisor.id, subordinate_id)
+    _ensure_valid_reporting_chain(db, supervisor, subordinate_ids)
 
     existing_rows = (
         db.query(UserSupervisorAccess)
         .filter(
             UserSupervisorAccess.supervisor_user_id == supervisor.id,
-            UserSupervisorAccess.relation_type == payload.relation_type,
+            UserSupervisorAccess.relation_type == relation_type,
         )
         .all()
     )
@@ -217,16 +388,25 @@ def set_reporting_links(payload: ReportingAccessUpdate, db: Session = Depends(ge
     for row in existing_rows:
         row.is_active = row.subordinate_user_id in subordinate_ids
 
+    moved_count = _deactivate_other_active_parents(
+        db,
+        supervisor_user_id=supervisor.id,
+        subordinate_ids=subordinate_ids,
+        relation_type=relation_type,
+    )
+
     for subordinate_id in subordinate_ids:
         if subordinate_id not in existing_by_subordinate:
             db.add(
                 UserSupervisorAccess(
                     supervisor_user_id=supervisor.id,
                     subordinate_user_id=subordinate_id,
-                    relation_type=payload.relation_type,
+                    relation_type=relation_type,
                     is_active=True,
                 )
             )
+        else:
+            existing_by_subordinate[subordinate_id].is_active = True
 
     audit_log(
         db,
@@ -234,17 +414,26 @@ def set_reporting_links(payload: ReportingAccessUpdate, db: Session = Depends(ge
         action="ACCESS_REPORTING_MAPPING_UPDATED",
         entity_type="User",
         entity_id=supervisor.id,
-        new_value={"subordinate_user_ids": sorted(subordinate_ids), "relation_type": payload.relation_type},
+        new_value={
+            "subordinate_user_ids": sorted(subordinate_ids),
+            "relation_type": relation_type,
+            "moved_from_other_supervisors": moved_count,
+            "rule": "single active parent per subordinate",
+        },
     )
     try:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Duplicate reporting mapping") from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Duplicate reporting mapping. Each user can have only one active reporting supervisor.",
+        ) from exc
 
     return {
         "message": "Reporting hierarchy updated",
         "supervisor_user_id": supervisor.id,
         "subordinate_user_ids": sorted(subordinate_ids),
-        "relation_type": payload.relation_type,
+        "relation_type": relation_type,
+        "moved_from_other_supervisors": moved_count,
     }

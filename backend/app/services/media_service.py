@@ -15,6 +15,12 @@ from app.core.config import settings
 
 
 IST = ZoneInfo("Asia/Kolkata")
+VIDEO_TRIM_SECONDS = 15
+
+
+class EvidenceProcessingError(RuntimeError):
+    """Raised when evidence media cannot be safely processed before storage."""
+
 
 
 def get_minio_client(
@@ -302,16 +308,17 @@ def stamp_video_bytes(
     gps_accuracy: float | None = None,
     content_type: str | None = None,
 ) -> tuple[bytes, str | None]:
-    """Permanently stamp captured date/time on video evidence.
+    """Permanently stamp and trim video evidence before storage.
 
-    This uses ffmpeg available in the backend Docker image. If ffmpeg fails for
-    any codec/container, the original video is returned unchanged so uploads do
-    not fail for the inspector.
+    All uploaded inspection videos are converted to MP4 and clipped to the first
+    VIDEO_TRIM_SECONDS seconds. The original full-length video is never stored.
+    If ffmpeg cannot process the video, the upload is rejected instead of saving
+    an untrimmed file.
     """
 
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
-        return data, content_type
+        raise EvidenceProcessingError("Video processing is not available on the API container. ffmpeg is required to trim inspection videos to 15 seconds.")
 
     lines = build_evidence_stamp_lines(
         captured_at=captured_at,
@@ -348,6 +355,12 @@ def stamp_video_bytes(
             "error",
             "-i",
             str(input_path),
+            "-t",
+            str(VIDEO_TRIM_SECONDS),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
             "-vf",
             drawtext,
             "-c:v",
@@ -356,8 +369,13 @@ def stamp_video_bytes(
             "ultrafast",
             "-crf",
             "23",
+            "-pix_fmt",
+            "yuv420p",
             "-c:a",
-            "copy",
+            "aac",
+            "-b:a",
+            "96k",
+            "-shortest",
             "-movflags",
             "+faststart",
             str(output_path),
@@ -368,10 +386,10 @@ def stamp_video_bytes(
             processed = output_path.read_bytes()
             if processed:
                 return processed, "video/mp4"
-        except Exception:
-            return data, content_type
+        except Exception as exc:
+            raise EvidenceProcessingError("Unable to trim/stamp the inspection video. Please record a normal camera video and upload again.") from exc
 
-    return data, content_type
+    raise EvidenceProcessingError("Unable to trim/stamp the inspection video. Please record again and retry.")
 
 
 def prepare_evidence_media(
@@ -387,7 +405,7 @@ def prepare_evidence_media(
     """Return upload-ready evidence bytes with visible date/time stamp.
 
     PHOTO evidence is stamped with Pillow.
-    VIDEO evidence is stamped with ffmpeg when available.
+    VIDEO evidence is stamped and trimmed to the first 15 seconds with ffmpeg.
     Other evidence types are returned unchanged.
     """
 

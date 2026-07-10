@@ -42,7 +42,7 @@ from app.services.inspection_service import (
     submit_entry_based_inspection,
     submit_inspection,
 )
-from app.services.media_service import build_object_path, prepare_evidence_media, sha256_bytes, upload_bytes
+from app.services.media_service import EvidenceProcessingError, build_object_path, prepare_evidence_media, sha256_bytes, upload_bytes
 from app.services.audit_service import audit_log
 from app.models.kpi_chemical import InspectionKpiContext, KPI_6_CLEANLINESS, KPI_CHEMICALS
 
@@ -580,15 +580,18 @@ async def upload_entry_media(
     _validate_upload_file(media_type, file, data)
 
     effective_captured_at = captured_at or datetime.utcnow()
-    stamped_data, stamped_content_type = prepare_evidence_media(
-        media_type=media_type,
-        data=data,
-        content_type=file.content_type,
-        captured_at=effective_captured_at,
-        captured_latitude=captured_latitude,
-        captured_longitude=captured_longitude,
-        gps_accuracy=gps_accuracy,
-    )
+    try:
+        stamped_data, stamped_content_type = prepare_evidence_media(
+            media_type=media_type,
+            data=data,
+            content_type=file.content_type,
+            captured_at=effective_captured_at,
+            captured_latitude=captured_latitude,
+            captured_longitude=captured_longitude,
+            gps_accuracy=gps_accuracy,
+        )
+    except EvidenceProcessingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     checksum = sha256_bytes(stamped_data)
     object_path = build_object_path(inspection.contract_id, inspection.station_id, inspection.id, f"entry-{entry.id}-{file.filename or 'upload.bin'}")
@@ -667,15 +670,18 @@ async def upload_media_legacy(
     _validate_upload_file(media_type, file, data)
 
     effective_captured_at = captured_at or datetime.utcnow()
-    stamped_data, stamped_content_type = prepare_evidence_media(
-        media_type=media_type,
-        data=data,
-        content_type=file.content_type,
-        captured_at=effective_captured_at,
-        captured_latitude=captured_latitude,
-        captured_longitude=captured_longitude,
-        gps_accuracy=gps_accuracy,
-    )
+    try:
+        stamped_data, stamped_content_type = prepare_evidence_media(
+            media_type=media_type,
+            data=data,
+            content_type=file.content_type,
+            captured_at=effective_captured_at,
+            captured_latitude=captured_latitude,
+            captured_longitude=captured_longitude,
+            gps_accuracy=gps_accuracy,
+        )
+    except EvidenceProcessingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     checksum = sha256_bytes(stamped_data)
     object_path = build_object_path(inspection.contract_id, inspection.station_id, inspection.id, file.filename or "upload.bin")
