@@ -622,8 +622,8 @@ def _review_action_label(action_value: str | None) -> str:
         "COMMENT": "Comment",
         "RETURN_FOR_CLARIFICATION": "Returned for clarification",
         "RECOMMEND_PENALTY": "Forwarded / recommended",
-        "APPROVE": "Final approved by GM/Ops",
-        "REJECT": "Final rejected by GM/Ops",
+        "APPROVE": "Approved",
+        "REJECT": "Rejected",
         "SEND_TO_GM": "Forwarded to GM/Ops",
         "GM_REVIEW": "Reviewed by GM/Ops",
     }
@@ -789,12 +789,9 @@ def _build_chemical_findings_table(db: Session, inspection: Inspection, styles):
 
 def _status_label(status_value: str | None) -> str:
     labels = {
-        "UNDER_LINE_MANAGER_REVIEW": "SUBMITTED TO LM/AM",
-        "LINE_MANAGER_RECOMMENDED": "FORWARDED BY LM/AM TO DGM",
-        "DGM_APPROVED": "FINAL APPROVED BY GM/OPS",
-        "DGM_REJECTED": "FINAL REJECTED BY GM/OPS",
-        "GM_REVIEW_REQUIRED": "FORWARDED BY DGM TO GM/OPS",
-        "GM_REVIEWED": "REVIEWED BY GM/OPS",
+        "UNDER_LINE_MANAGER_REVIEW": "SUBMITTED TO LINE MANAGER",
+        "LINE_MANAGER_RECOMMENDED": "APPROVED BY LINE MANAGER",
+        "DGM_APPROVED": "APPROVED BY DGM",
         "DRAFT": "DRAFT",
     }
     return labels.get(status_value, status_value or "-")

@@ -203,17 +203,35 @@ def save_entry(db: Session, inspection: Inspection, payload: InspectionEntryCrea
     return entry
 
 
+def _media_preview_dict(media: InspectionMedia) -> dict:
+    return {
+        "id": media.id,
+        "inspection_id": media.inspection_id,
+        "inspection_entry_id": media.inspection_entry_id,
+        "media_type": media.media_type.value if getattr(media.media_type, "value", None) else str(media.media_type or ""),
+        "original_file_name": media.original_file_name,
+        "mime_type": media.mime_type,
+        "file_size": media.file_size,
+        "captured_latitude": media.captured_latitude,
+        "captured_longitude": media.captured_longitude,
+        "gps_accuracy": media.gps_accuracy,
+        "captured_at": media.captured_at,
+        "preview_url": f"/inspections/media/{media.id}/preview",
+    }
+
+
 def entry_to_dict(db: Session, entry: InspectionEntry) -> dict:
-    photo_count = db.query(InspectionMedia).filter_by(
-        inspection_entry_id=entry.id,
-        media_type=MediaType.PHOTO,
-        is_deleted=False,
-    ).count()
-    video_count = db.query(InspectionMedia).filter_by(
-        inspection_entry_id=entry.id,
-        media_type=MediaType.VIDEO,
-        is_deleted=False,
-    ).count()
+    media_files = (
+        db.query(InspectionMedia)
+        .filter(
+            InspectionMedia.inspection_entry_id == entry.id,
+            InspectionMedia.is_deleted == False,  # noqa: E712
+        )
+        .order_by(InspectionMedia.id)
+        .all()
+    )
+    photo_count = sum(1 for media in media_files if media.media_type == MediaType.PHOTO)
+    video_count = sum(1 for media in media_files if media.media_type == MediaType.VIDEO)
     return {
         "id": entry.id,
         "inspection_id": entry.inspection_id,
@@ -233,6 +251,7 @@ def entry_to_dict(db: Session, entry: InspectionEntry) -> dict:
         "created_at": entry.created_at,
         "photo_count": photo_count,
         "video_count": video_count,
+        "media_files": [_media_preview_dict(media) for media in media_files],
     }
 
 
@@ -286,15 +305,33 @@ def save_draft(db: Session, inspection: Inspection, payload: InspectionDraftIn, 
     for obs_in in payload.observations:
         row = db.query(InspectionSubAreaObservation).filter_by(inspection_id=inspection.id, sub_area_id=obs_in.sub_area_id).first()
         if not row:
-            row = InspectionSubAreaObservation(**obs_in.model_dump(), inspection_id=inspection.id)
+            row = InspectionSubAreaObservation(
+                inspection_id=inspection.id,
+                attribute_id=obs_in.attribute_id,
+                sub_area_id=obs_in.sub_area_id,
+                is_applicable=obs_in.is_applicable,
+                na_reason=obs_in.na_reason,
+                observation_text=obs_in.observation_text,
+            )
             db.add(row)
         else:
             row.is_applicable = obs_in.is_applicable
             row.na_reason = obs_in.na_reason
             row.observation_text = obs_in.observation_text
-    if payload.remarks is not None:
-        inspection.remarks = payload.remarks
+
+    inspection.remarks = payload.remarks
     audit_log(db, actor=user, action="INSPECTION_DRAFT_SAVED", entity_type="Inspection", entity_id=inspection.id)
+    db.commit()
+    db.refresh(inspection)
+    return inspection
+
+
+def submit_inspection(db: Session, inspection: Inspection, payload: InspectionDraftIn, user: User) -> Inspection:
+    save_draft(db, inspection, payload, user)
+    inspection.status = InspectionStatus.UNDER_LINE_MANAGER_REVIEW
+    inspection.submitted_at = datetime.utcnow()
+    db.add(InspectionWorkflowHistory(inspection_id=inspection.id, from_status=InspectionStatus.DRAFT.value, to_status=inspection.status.value, action_by=user.id, action="SUBMIT", remarks="Submitted for Line Manager review"))
+    audit_log(db, actor=user, action="INSPECTION_SUBMITTED", entity_type="Inspection", entity_id=inspection.id)
     db.commit()
     db.refresh(inspection)
     return inspection
@@ -304,52 +341,34 @@ def submit_entry_based_inspection(db: Session, inspection: Inspection, user: Use
     if inspection.status not in [InspectionStatus.DRAFT, InspectionStatus.RETURNED_FOR_CLARIFICATION]:
         raise HTTPException(status_code=400, detail="Only draft or returned inspection can be submitted")
     require_station_access(db, user, inspection.station_id)
-
     entries = db.query(InspectionEntry).filter(
         InspectionEntry.inspection_id == inspection.id,
         InspectionEntry.is_deleted == False,  # noqa: E712
-    ).order_by(InspectionEntry.id).all()
+    ).all()
     if not entries:
-        raise HTTPException(status_code=400, detail="Add at least one inspection entry before submitting")
+        raise HTTPException(status_code=400, detail="At least one inspection entry is required before submission")
 
-    missing_photo = []
+    missing = []
     for entry in entries:
-        photo_count = db.query(InspectionMedia).filter_by(
-            inspection_entry_id=entry.id,
-            media_type=MediaType.PHOTO,
-            is_deleted=False,
+        required_photos = max(1, int(entry.sub_area.photo_min_required or 1)) if entry.sub_area else 1
+        photo_count = db.query(InspectionMedia).filter(
+            InspectionMedia.inspection_entry_id == entry.id,
+            InspectionMedia.media_type == MediaType.PHOTO,
+            InspectionMedia.is_deleted == False,  # noqa: E712
         ).count()
-        if photo_count < 1:
-            missing_photo.append(f"{entry.entry_no} - {entry.attribute.name if entry.attribute else entry.attribute_id} / {entry.sub_area.name if entry.sub_area else entry.sub_area_id}")
-    if missing_photo:
-        raise HTTPException(status_code=400, detail="Photo evidence required for: " + "; ".join(missing_photo))
+        if photo_count < required_photos:
+            missing.append(f"{entry.entry_no}: {entry.sub_area.name if entry.sub_area else 'Sub-area'} needs {required_photos} photo(s)")
 
+    if missing:
+        raise HTTPException(status_code=400, detail="; ".join(missing))
+
+    from_status = inspection.status.value
+    inspection.status = InspectionStatus.UNDER_LINE_MANAGER_REVIEW
+    inspection.submitted_at = datetime.utcnow()
     if remarks is not None:
         inspection.remarks = remarks
-    old_status = inspection.status.value
-    inspection.status = InspectionStatus.UNDER_LINE_MANAGER_REVIEW
-    inspection.submitted_at = datetime.utcnow()
-    db.add(InspectionWorkflowHistory(inspection_id=inspection.id, from_status=old_status, to_status=inspection.status.value, action_by=user.id, action="SUBMIT", remarks="Entry-based inspection submitted for Line Manager review"))
-    audit_log(db, actor=user, action="INSPECTION_SUBMITTED", entity_type="Inspection", entity_id=inspection.id, old_value={"status": old_status}, new_value={"status": inspection.status.value, "entry_count": len(entries)})
-    db.commit()
-    db.refresh(inspection)
-    return inspection
-
-
-def submit_inspection(db: Session, inspection: Inspection, payload: InspectionDraftIn, user: User) -> Inspection:
-    """Legacy checklist submit retained for older screens/API clients."""
-    inspection = save_draft(db, inspection, payload, user)
-    attributes = db.query(InspectionAttribute).filter_by(is_active=True).all()
-    scored_attribute_ids = {s.attribute_id for s in inspection.attribute_scores}
-    missing = [a.name for a in attributes if a.id not in scored_attribute_ids]
-    if missing:
-        raise HTTPException(status_code=400, detail=f"Missing grading for attributes: {', '.join(missing)}")
-
-    old_status = inspection.status.value
-    inspection.status = InspectionStatus.UNDER_LINE_MANAGER_REVIEW
-    inspection.submitted_at = datetime.utcnow()
-    db.add(InspectionWorkflowHistory(inspection_id=inspection.id, from_status=old_status, to_status=inspection.status.value, action_by=user.id, action="SUBMIT", remarks="Submitted for Line Manager review"))
-    audit_log(db, actor=user, action="INSPECTION_SUBMITTED", entity_type="Inspection", entity_id=inspection.id, old_value={"status": old_status}, new_value={"status": inspection.status.value})
+    db.add(InspectionWorkflowHistory(inspection_id=inspection.id, from_status=from_status, to_status=inspection.status.value, action_by=user.id, action="SUBMIT", remarks="Submitted for Line Manager review"))
+    audit_log(db, actor=user, action="INSPECTION_SUBMITTED", entity_type="Inspection", entity_id=inspection.id)
     db.commit()
     db.refresh(inspection)
     return inspection

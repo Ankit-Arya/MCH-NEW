@@ -107,6 +107,21 @@ class MediaOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class EntryMediaPreviewOut(BaseModel):
+    id: int
+    inspection_id: int
+    inspection_entry_id: int | None = None
+    media_type: MediaType
+    original_file_name: str | None = None
+    mime_type: str | None = None
+    file_size: int | None = None
+    captured_latitude: float | None = None
+    captured_longitude: float | None = None
+    gps_accuracy: float | None = None
+    captured_at: datetime | None = None
+    preview_url: str
+
+
 class InspectionEntryOut(BaseModel):
     id: int
     inspection_id: int
@@ -123,6 +138,7 @@ class InspectionEntryOut(BaseModel):
     created_by: int
     photo_count: int = 0
     video_count: int = 0
+    media_files: list[EntryMediaPreviewOut] = Field(default_factory=list)
     attribute_name: str | None = None
     sub_area_name: str | None = None
     created_at: datetime

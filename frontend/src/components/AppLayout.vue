@@ -41,6 +41,10 @@
           Action Required
           <span v-if="actionRequiredNotice.count" class="nav-review-pill action-pill">{{ actionRequiredNotice.count }}</span>
         </RouterLink>
+        <RouterLink to="/inspections/weekly-compliance" @click="closeMobileMenu">
+          Weekly Compliance
+          <span v-if="weeklyPendingBadge" class="nav-review-pill compliance-pill">{{ weeklyPendingBadge }}</span>
+        </RouterLink>
         <RouterLink to="/reports" @click="closeMobileMenu">Reports & PDFs</RouterLink>
         <RouterLink to="/reviews" @click="closeMobileMenu">
           Review Queue
@@ -54,7 +58,7 @@
 
       <div class="sidebar-note">
         <strong>Demo users</strong>
-        <span>admin/admin123 · sm01/sm123 · lm01/lm123 · dgm01/dgm123 · gm01/gm123</span>
+        <span>admin/admin123 · sm01/sm123 · dgm01/dgm123 · gm01/gm123</span>
       </div>
     </aside>
 
@@ -100,7 +104,7 @@
       <section class="review-notice-modal action-notice-modal" role="dialog" aria-modal="true" aria-labelledby="action-required-title">
         <button class="review-notice-close" type="button" aria-label="Close action required notification" @click="dismissActionRequiredNotice">×</button>
         <div class="review-notice-icon action-icon" aria-hidden="true">!</div>
-        <p class="review-notice-kicker">Inspection action required</p>
+        <p class="review-notice-kicker">Inspection attention required</p>
         <h2 id="action-required-title">{{ actionRequiredModalTitle }}</h2>
         <p class="review-notice-text">{{ actionRequiredModalText }}</p>
 
@@ -111,8 +115,18 @@
         >
           <span>This week</span>
           <strong>{{ weeklyRangeLabel }}</strong>
-          <small>Required {{ actionRequiredNotice.weeklyRequired }} · Done {{ actionRequiredNotice.weeklyCompleted }} · Remaining {{ actionRequiredNotice.weeklyRemaining }}</small>
+          <small>
+            Required {{ actionRequiredNotice.weeklyRequired }} · Done {{ actionRequiredNotice.weeklyCompleted }} · Remaining {{ actionRequiredNotice.weeklyRemaining }}
+          </small>
           <p>{{ actionRequiredNotice.weeklyMessage }}</p>
+          <div v-if="actionRequiredNotice.weeklyPendingRows" class="weekly-report-note">
+            {{ actionRequiredNotice.weeklyPendingRows }} station/user row{{ actionRequiredNotice.weeklyPendingRows === 1 ? '' : 's' }} need attention. Open the full station-wise report for details.
+          </div>
+          <ul v-if="actionRequiredNotice.weeklyTopPending.length" class="weekly-pending-list">
+            <li v-for="item in actionRequiredNotice.weeklyTopPending" :key="`${item.inspector_id}-${item.station_id}`">
+              <strong>{{ item.inspector_name }}</strong> · {{ item.station_name }} · {{ item.remaining }} pending
+            </li>
+          </ul>
         </div>
 
         <div class="review-notice-meta">
@@ -122,6 +136,7 @@
         </div>
         <div class="review-notice-actions">
           <button class="btn btn-primary" type="button" @click="handleActionRequiredPrimary">{{ actionRequiredPrimaryText }}</button>
+          <button v-if="actionRequiredNotice.count && actionRequiredNotice.weeklyApplies" class="btn btn-muted" type="button" @click="goToActionRequired">Open Action Required</button>
           <button class="btn btn-muted" type="button" @click="dismissActionRequiredNotice">Remind me later</button>
         </div>
       </section>
@@ -143,6 +158,7 @@
         </div>
         <div class="review-notice-actions">
           <button class="btn btn-primary" type="button" @click="goToReviews">Open Review Queue</button>
+          <button class="btn btn-muted" type="button" @click="goToWeeklyCompliance">Weekly Compliance</button>
           <button class="btn btn-muted" type="button" @click="dismissPendingReviewNotice">Remind me later</button>
         </div>
       </section>
@@ -174,43 +190,49 @@ const actionRequiredNotice = reactive({
   weeklyRequired: 0,
   weeklyCompleted: 0,
   weeklyRemaining: 0,
+  weeklyPendingRows: 0,
+  weeklyIssueRows: 0,
   weeklyComplete: true,
   weeklyNeedsAction: false,
   weeklyRoleLabel: '',
   weeklyStart: '',
   weeklyEnd: '',
-  weeklyMessage: ''
+  weeklyMessage: '',
+  weeklyTopPending: []
 })
 const reviewerRoleLabel = computed(() => roleLabel(auth.user?.role))
 
+const weeklyPendingBadge = computed(() => {
+  const value = Number(actionRequiredNotice.weeklyRemaining || 0)
+  return value > 0 ? value : 0
+})
 const hasActionRequiredNotice = computed(() => actionRequiredNotice.count > 0 || actionRequiredNotice.weeklyApplies)
 const hasActionRequiredChip = computed(() => actionRequiredNotice.count > 0 || actionRequiredNotice.weeklyNeedsAction)
 const actionRequiredChipText = computed(() => {
+  if (actionRequiredNotice.weeklyNeedsAction) return `${actionRequiredNotice.weeklyRemaining} weekly pending`
   if (actionRequiredNotice.count > 0) return `${actionRequiredNotice.count} action required`
-  if (actionRequiredNotice.weeklyNeedsAction) return 'Weekly target pending'
-  return 'Weekly target status'
+  return 'Weekly compliance'
 })
 const actionRequiredChipTitle = computed(() => {
-  if (actionRequiredNotice.count > 0 && actionRequiredNotice.weeklyNeedsAction) return 'Draft/returned inspections and weekly target pending'
+  if (actionRequiredNotice.weeklyNeedsAction && actionRequiredNotice.count > 0) return 'Weekly compliance and draft/returned inspections need action'
+  if (actionRequiredNotice.weeklyNeedsAction) return 'Station-wise weekly inspection compliance is pending'
   if (actionRequiredNotice.count > 0) return `${actionRequiredNotice.count} draft/returned inspection(s) need action`
-  if (actionRequiredNotice.weeklyNeedsAction) return 'Weekly inspection target is still pending'
-  return 'Weekly inspection target status'
+  return 'Weekly compliance status'
 })
 const actionRequiredModalTitle = computed(() => {
-  if (actionRequiredNotice.weeklyApplies && actionRequiredNotice.count > 0) return 'Weekly target and saved inspection work'
-  if (actionRequiredNotice.weeklyApplies) return 'Weekly inspection target status'
+  if (actionRequiredNotice.weeklyApplies && actionRequiredNotice.count > 0) return 'Weekly compliance and saved inspection work'
+  if (actionRequiredNotice.weeklyApplies) return 'Station-wise weekly compliance status'
   return `${actionRequiredNotice.count} draft/returned inspection${actionRequiredNotice.count === 1 ? '' : 's'} need your action`
 })
 const actionRequiredModalText = computed(() => {
-  if (actionRequiredNotice.weeklyApplies && actionRequiredNotice.count > 0) {
-    return 'Review your weekly inspection completion status and continue any draft or returned inspections that still need action.'
+  if (actionRequiredNotice.weeklyApplies) {
+    return 'The complete station-wise list is available on the Weekly Compliance page. It includes SM/EIT, station, target, completed count and remaining inspections for your hierarchy.'
   }
-  if (actionRequiredNotice.weeklyApplies) return 'Your weekly inspection completion status is shown below for this login.'
   return 'Draft inspections and returned-for-clarification inspections are waiting for you to complete, correct, and resubmit.'
 })
 const actionRequiredPrimaryText = computed(() => {
+  if (actionRequiredNotice.weeklyNeedsAction || actionRequiredNotice.weeklyApplies) return 'Open Weekly Compliance'
   if (actionRequiredNotice.count > 0) return 'Open Action Required'
-  if (actionRequiredNotice.weeklyNeedsAction) return 'Start Inspection'
   return 'Okay'
 })
 const weeklyRangeLabel = computed(() => {
@@ -310,12 +332,15 @@ function resetActionRequiredNotice() {
   actionRequiredNotice.weeklyRequired = 0
   actionRequiredNotice.weeklyCompleted = 0
   actionRequiredNotice.weeklyRemaining = 0
+  actionRequiredNotice.weeklyPendingRows = 0
+  actionRequiredNotice.weeklyIssueRows = 0
   actionRequiredNotice.weeklyComplete = true
   actionRequiredNotice.weeklyNeedsAction = false
   actionRequiredNotice.weeklyRoleLabel = ''
   actionRequiredNotice.weeklyStart = ''
   actionRequiredNotice.weeklyEnd = ''
   actionRequiredNotice.weeklyMessage = ''
+  actionRequiredNotice.weeklyTopPending = []
 }
 
 const LOGIN_SESSION_KEY = 'mch-login-session-id'
@@ -338,7 +363,7 @@ function sessionKey(prefix, user) {
 function pendingReviewSessionKey(user) { return sessionKey('mch-pending-review-popup', user) }
 function actionRequiredSessionKey(user) { return sessionKey('mch-action-required-popup', user) }
 function shouldCheckPendingReviews(user) { return Boolean(user?.role && reviewerRoles.has(user.role)) }
-function shouldCheckActionRequired(user) { return Boolean(user?.role && !reviewerRoles.has(user.role)) || ['SUPER_ADMIN', 'HK_CELL_ADMIN'].includes(user?.role) }
+function shouldCheckActionRequired(user) { return Boolean(user?.role) }
 function markNoticeChecked(key) { if (key && typeof sessionStorage !== 'undefined') sessionStorage.setItem(key, 'checked') }
 function wasNoticeChecked(key) { return Boolean(key && typeof sessionStorage !== 'undefined' && sessionStorage.getItem(key) === 'checked') }
 
@@ -348,10 +373,10 @@ function openActionRequiredNotice() { if (hasActionRequiredNotice.value) actionR
 function dismissActionRequiredNotice() { actionRequiredNotice.open = false; markNoticeChecked(actionRequiredNotice.checkedKey) }
 async function goToReviews() { dismissPendingReviewNotice(); closeMobileMenu(); await router.push('/reviews') }
 async function goToActionRequired() { dismissActionRequiredNotice(); closeMobileMenu(); await router.push('/inspections/action-required') }
-async function goToStartInspection() { dismissActionRequiredNotice(); closeMobileMenu(); await router.push('/inspections/start') }
+async function goToWeeklyCompliance() { dismissActionRequiredNotice(); closeMobileMenu(); await router.push('/inspections/weekly-compliance') }
 async function handleActionRequiredPrimary() {
+  if (actionRequiredNotice.weeklyApplies) return goToWeeklyCompliance()
   if (actionRequiredNotice.count > 0) return goToActionRequired()
-  if (actionRequiredNotice.weeklyNeedsAction) return goToStartInspection()
   dismissActionRequiredNotice()
 }
 
@@ -378,25 +403,34 @@ async function checkActionRequiredForUser(user) {
   actionRequiredNotice.loading = true
   actionRequiredNotice.checkedKey = key
   try {
-    const { data } = await api.get('/inspections/login-notification-summary')
-    const action = data?.action_required || {}
-    const weekly = data?.weekly_target || {}
+    const [actionResult, complianceResult] = await Promise.allSettled([
+      api.get('/inspections/login-notification-summary'),
+      api.get('/weekly-compliance/summary')
+    ])
+
+    const actionData = actionResult.status === 'fulfilled' ? actionResult.value?.data : {}
+    const complianceData = complianceResult.status === 'fulfilled' ? complianceResult.value?.data : {}
+    const action = actionData?.action_required || {}
+    const weekly = complianceData?.summary || {}
 
     actionRequiredNotice.count = Number(action.total || 0)
     actionRequiredNotice.draft = Number(action.draft || 0)
     actionRequiredNotice.returned = Number(action.returned || 0)
-    actionRequiredNotice.weeklyApplies = Boolean(weekly.applies)
-    actionRequiredNotice.weeklyRequired = Number(weekly.required || 0)
-    actionRequiredNotice.weeklyCompleted = Number(weekly.completed || 0)
-    actionRequiredNotice.weeklyRemaining = Number(weekly.remaining || 0)
+    actionRequiredNotice.weeklyApplies = Boolean(weekly.total_rows || weekly.issue_rows || weekly.total_required)
+    actionRequiredNotice.weeklyRequired = Number(weekly.total_required || 0)
+    actionRequiredNotice.weeklyCompleted = Number(weekly.total_completed || 0)
+    actionRequiredNotice.weeklyRemaining = Number(weekly.total_remaining || 0)
+    actionRequiredNotice.weeklyPendingRows = Number(weekly.pending_rows || 0)
+    actionRequiredNotice.weeklyIssueRows = Number(weekly.issue_rows || 0)
     actionRequiredNotice.weeklyComplete = Boolean(weekly.is_complete)
-    actionRequiredNotice.weeklyNeedsAction = Boolean(weekly.applies && !weekly.is_complete)
-    actionRequiredNotice.weeklyRoleLabel = weekly.role_label || ''
-    actionRequiredNotice.weeklyStart = weekly.week_start || ''
-    actionRequiredNotice.weeklyEnd = weekly.week_end || ''
+    actionRequiredNotice.weeklyNeedsAction = Boolean(!weekly.is_complete && actionRequiredNotice.weeklyApplies)
+    actionRequiredNotice.weeklyRoleLabel = complianceData?.current_role || ''
+    actionRequiredNotice.weeklyStart = complianceData?.week_start || ''
+    actionRequiredNotice.weeklyEnd = complianceData?.week_end || ''
     actionRequiredNotice.weeklyMessage = weekly.message || ''
+    actionRequiredNotice.weeklyTopPending = Array.isArray(complianceData?.top_pending) ? complianceData.top_pending : []
 
-    if (hasActionRequiredNotice.value && router.currentRoute.value.path !== '/inspections/action-required') {
+    if (hasActionRequiredNotice.value && router.currentRoute.value.path !== '/inspections/action-required' && router.currentRoute.value.path !== '/inspections/weekly-compliance') {
       actionRequiredNotice.open = true
     }
   } catch {
@@ -435,6 +469,7 @@ onBeforeUnmount(() => {
 .main-nav a.router-link-active, .main-nav a:hover { background: rgba(255,255,255,.13); color: white; }
 .nav-review-pill { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 24px; padding: 0 7px; border-radius: 999px; background: #ef4444; color: white; font-size: 12px; font-weight: 900; box-shadow: 0 10px 22px rgba(239,68,68,.28); }
 .action-pill { background: #f59e0b; box-shadow: 0 10px 22px rgba(245,158,11,.28); }
+.compliance-pill { background: #7c3aed; box-shadow: 0 10px 22px rgba(124,58,237,.28); }
 .drawer-user-card { display: none; }
 .sidebar-note { margin-top: 28px; padding: 14px; border-radius: 18px; background: rgba(255,255,255,.10); color: #dbeafe; font-size: 12px; line-height: 1.5; }
 .sidebar-note strong { display: block; color: white; margin-bottom: 5px; }
@@ -459,7 +494,7 @@ onBeforeUnmount(() => {
 .mobile-menu-btn.is-open span:nth-child(2) { opacity: 0; }
 .mobile-menu-btn.is-open span:nth-child(3) { transform: translateY(-8px) rotate(-45deg); }
 .review-notice-backdrop { position: fixed; inset: 0; z-index: 3000; display: grid; place-items: center; padding: 22px; background: rgba(15,23,42,.46); backdrop-filter: blur(4px); }
-.review-notice-modal { width: min(520px, 100%); position: relative; border-radius: 28px; border: 1px solid rgba(219,227,240,.95); background: radial-gradient(circle at 0 0, rgba(239,68,68,.10), transparent 34%), linear-gradient(135deg, #ffffff 0%, #f8fbff 100%); box-shadow: 0 34px 90px rgba(15,23,42,.26); padding: 28px; text-align: center; }
+.review-notice-modal { width: min(560px, 100%); position: relative; border-radius: 28px; border: 1px solid rgba(219,227,240,.95); background: radial-gradient(circle at 0 0, rgba(239,68,68,.10), transparent 34%), linear-gradient(135deg, #ffffff 0%, #f8fbff 100%); box-shadow: 0 34px 90px rgba(15,23,42,.26); padding: 28px; text-align: center; max-height: 88vh; overflow: auto; }
 .action-notice-modal { background: radial-gradient(circle at 0 0, rgba(245,158,11,.16), transparent 34%), linear-gradient(135deg, #ffffff 0%, #fffbeb 100%); }
 .review-notice-close { position: absolute; top: 14px; right: 14px; width: 38px; height: 38px; border: 0; border-radius: 999px; background: #e2e8f0; color: #0f172a; font-size: 25px; line-height: 1; cursor: pointer; }
 .review-notice-close:hover { background: #cbd5e1; }
@@ -478,10 +513,12 @@ onBeforeUnmount(() => {
 .weekly-target-card strong { font-size: 16px; color: #0f172a; }
 .weekly-target-card small { color: #475569; font-weight: 900; }
 .weekly-target-card p { margin: 4px 0 0; color: #334155; font-weight: 800; line-height: 1.35; }
+.weekly-report-note { margin-top: 8px; border-radius: 12px; background: rgba(124, 58, 237, 0.08); color: #4c1d95; padding: 8px 10px; font-weight: 900; }
+.weekly-pending-list { margin: 8px 0 0; padding-left: 18px; color: #334155; font-size: 13px; line-height: 1.45; }
 .review-notice-actions { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; margin-top: 20px; }
 @media (max-width: 820px) {
   .sidebar { --safe-top: env(safe-area-inset-top, 0px); --header-x: 10px; --header-top: 8px; --header-height: 58px; --header-total: calc(var(--safe-top) + var(--header-top) + var(--header-height) + 10px); width: 100%; min-height: 0; height: var(--header-total); max-height: 100dvh; position: fixed; inset: 0 0 auto 0; z-index: 1000; padding: calc(var(--safe-top) + var(--header-top)) var(--header-x) 10px; overflow: hidden; border-radius: 0 0 24px 24px; box-shadow: 0 12px 30px rgba(8,31,80,.20); transition: height .22s ease, border-radius .22s ease, box-shadow .22s ease; }
-  .sidebar.menu-open { height: min(100dvh, 650px); border-radius: 0 0 26px 26px; box-shadow: 0 26px 72px rgba(2,6,23,.36); }
+  .sidebar.menu-open { height: min(100dvh, 700px); border-radius: 0 0 26px 26px; box-shadow: 0 26px 72px rgba(2,6,23,.36); }
   .brand-card { min-height: var(--header-height); padding: 8px 10px; border-radius: 18px; gap: 8px; box-shadow: inset 0 1px 0 rgba(255,255,255,.14); }
   .brand-left { flex: 1 1 auto; min-width: 0; justify-content: flex-start; }
   .brand-logo { width: 58px; border-radius: 10px; }

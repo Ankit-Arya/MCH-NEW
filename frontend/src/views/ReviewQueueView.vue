@@ -3,7 +3,7 @@
     <section class="card hero-panel">
       <h1>Review Queue</h1>
       <p class="hero-subtitle">
-        Pending inspections are loaded page by page. Use the approval tracker to see when the inspection was done, submitted, and approved at each level before taking action.
+        Pending inspections are loaded page by page. LM/AM and DGM can only forward to the next level or return for clarification. GM/Ops gives final approval or rejection.
       </p>
     </section>
 
@@ -104,7 +104,6 @@
       </div>
     </section>
 
-
     <section v-if="selectedTrackerRow" class="tracker-modal-backdrop" @click.self="closeTracker">
       <div class="tracker-modal-card">
         <div class="tracker-modal-header">
@@ -137,7 +136,6 @@
       </div>
     </section>
 
-
     <section v-if="reviewModal.open" class="tracker-modal-backdrop" @click.self="closeReviewModal">
       <div class="tracker-modal-card review-modal-card">
         <div class="tracker-modal-header">
@@ -151,6 +149,11 @@
           <button class="btn btn-outline" type="button" @click="closeReviewModal">Close</button>
         </div>
 
+        <div class="review-rule-box">
+          <strong>{{ reviewRuleTitle(reviewModal.item) }}</strong>
+          <span>{{ reviewRuleText(reviewModal.item) }}</span>
+        </div>
+
         <div class="review-form-grid">
           <label class="form-field">
             <span class="label">Action</span>
@@ -162,7 +165,7 @@
           </label>
 
           <label class="form-field">
-            <span class="label">Remarks before forwarding / approval</span>
+            <span class="label">Remarks before forwarding / final decision</span>
             <textarea
               class="input remarks-input"
               v-model="reviewModal.comments"
@@ -214,19 +217,9 @@ const selectedTrackerRow = ref(null)
 const reviewModal = reactive({ open: false, item: null, action: '', comments: '' })
 const pagination = reactive({ page: 1, size: 20, total: 0, pages: 1, has_next: false, has_prev: false, from_record: 0, to_record: 0 })
 
-
-function openTracker(row) {
-  selectedTrackerRow.value = row
-}
-
-function closeTracker() {
-  selectedTrackerRow.value = null
-}
-
-function trackerStages(row) {
-  return row?.workflow_tracker?.stages || []
-}
-
+function openTracker(row) { selectedTrackerRow.value = row }
+function closeTracker() { selectedTrackerRow.value = null }
+function trackerStages(row) { return row?.workflow_tracker?.stages || [] }
 function trackerButtonText(row) {
   const stages = trackerStages(row)
   const done = stages.filter((stage) => stage.status === 'done').length
@@ -235,7 +228,6 @@ function trackerButtonText(row) {
   if (stages.length) return `${done}/${stages.length} done · View trail`
   return 'View trail'
 }
-
 function applyPagination(data) {
   rows.value = data.items || []
   pagination.page = data.page || 1
@@ -248,7 +240,6 @@ function applyPagination(data) {
   pagination.to_record = data.to_record || Math.min(pagination.page * pagination.size, pagination.total)
   if (!pagination.total) { pagination.from_record = 0; pagination.to_record = 0 }
 }
-
 async function enrichWithWorkflow(items) {
   const missingIds = (items || []).filter((item) => !item.workflow_tracker).map((item) => item.id).filter(Boolean)
   if (!missingIds.length) return items || []
@@ -260,10 +251,10 @@ async function enrichWithWorkflow(items) {
     return items || []
   }
 }
-
 function statusClass(s) {
   const text = String(s || '')
-  return text.includes('APPROVED') || text.includes('REVIEWED') ? 'green' : text.includes('RECOMMENDED') ? 'blue' : 'amber'
+  if (text.includes('REJECT')) return 'red'
+  return text.includes('APPROVED') || text.includes('CLOSED') ? 'green' : text.includes('RECOMMENDED') || text.includes('REVIEW') ? 'amber' : 'blue'
 }
 function shortType(type) { return String(type || '').replace('_INSPECTION', '').replaceAll('_', ' ') }
 function formatDate(value) {
@@ -284,25 +275,36 @@ function displayPercent(value) {
   return `${Number(value).toFixed(2).replace(/\.00$/, '')}%`
 }
 function actionName(action) {
-  const labels = { RECOMMEND_PENALTY: 'Recommended', APPROVE: 'Approved', REJECT: 'Rejected', RETURN_FOR_CLARIFICATION: 'Returned', SEND_TO_GM: 'Sent to GM', GM_REVIEW: 'Reviewed' }
+  const labels = {
+    RECOMMEND_PENALTY: 'Forwarded to DGM',
+    APPROVE: 'Final approved by GM/Ops',
+    REJECT: 'Final rejected by GM/Ops',
+    RETURN_FOR_CLARIFICATION: 'Returned for clarification',
+    SEND_TO_GM: 'Forwarded to GM/Ops',
+    GM_REVIEW: 'Reviewed by GM/Ops'
+  }
   return labels[action] || String(action || '').replaceAll('_', ' ')
 }
 function reviewActionOptions(item) {
   if (!item) return []
   if (item.status === 'UNDER_LINE_MANAGER_REVIEW') {
     return [
-      { value: 'RECOMMEND_PENALTY', label: 'Forward to DGM / Recommend' },
+      { value: 'RECOMMEND_PENALTY', label: 'Forward to DGM' },
       { value: 'RETURN_FOR_CLARIFICATION', label: 'Return for clarification' }
     ]
   }
   if (item.status === 'LINE_MANAGER_RECOMMENDED') {
     return [
-      { value: 'APPROVE', label: 'Approve as DGM' },
       { value: 'SEND_TO_GM', label: 'Forward to GM/Ops' },
-      { value: 'REJECT', label: 'Reject' }
+      { value: 'RETURN_FOR_CLARIFICATION', label: 'Return for clarification' }
     ]
   }
-  if (item.status === 'GM_REVIEW_REQUIRED') return [{ value: 'GM_REVIEW', label: 'Review / close as GM/Ops' }]
+  if (item.status === 'GM_REVIEW_REQUIRED') {
+    return [
+      { value: 'APPROVE', label: 'Final approve as GM/Ops' },
+      { value: 'REJECT', label: 'Final reject as GM/Ops' }
+    ]
+  }
   return []
 }
 function actionLabel(item) {
@@ -313,12 +315,25 @@ function defaultRemarks(item, action) {
   const labels = {
     RECOMMEND_PENALTY: 'Reviewed and forwarded to DGM.',
     RETURN_FOR_CLARIFICATION: 'Returned for clarification.',
-    APPROVE: 'Approved by DGM.',
-    SEND_TO_GM: 'Forwarded to GM/Ops for review.',
-    REJECT: 'Rejected by DGM.',
-    GM_REVIEW: 'Reviewed by GM/Ops.'
+    SEND_TO_GM: 'Reviewed and forwarded to GM/Ops for final decision.',
+    APPROVE: 'Final approved by GM/Ops.',
+    REJECT: 'Final rejected by GM/Ops.'
   }
   return labels[action] || ''
+}
+function reviewRuleTitle(item) {
+  if (!item) return 'Hierarchy action rule'
+  if (item.status === 'UNDER_LINE_MANAGER_REVIEW') return 'LM/AM action rule'
+  if (item.status === 'LINE_MANAGER_RECOMMENDED') return 'DGM action rule'
+  if (item.status === 'GM_REVIEW_REQUIRED') return 'GM/Ops final decision rule'
+  return 'Hierarchy action rule'
+}
+function reviewRuleText(item) {
+  if (!item) return ''
+  if (item.status === 'UNDER_LINE_MANAGER_REVIEW') return 'LM/AM can only forward to DGM or return for clarification.'
+  if (item.status === 'LINE_MANAGER_RECOMMENDED') return 'DGM can only forward to GM/Ops or return for clarification.'
+  if (item.status === 'GM_REVIEW_REQUIRED') return 'GM/Ops must give final approval or final rejection.'
+  return ''
 }
 function openReviewModal(item) {
   const options = reviewActionOptions(item)
@@ -334,8 +349,6 @@ function closeReviewModal() {
   reviewModal.action = ''
   reviewModal.comments = ''
 }
-
-
 async function loadPage() {
   loading.value = true
   try {
@@ -349,11 +362,19 @@ async function goFirst() { pagination.page = 1; await loadPage() }
 async function goPrev() { if (pagination.has_prev) { pagination.page -= 1; await loadPage() } }
 async function goNext() { if (pagination.has_next) { pagination.page += 1; await loadPage() } }
 async function goLast() { pagination.page = pagination.pages; await loadPage() }
-
 function cleanupPdfUrl() { if (pdfPreview.url) { window.URL.revokeObjectURL(pdfPreview.url); pdfPreview.url = '' } }
 function closePdfPreview() { pdfPreview.open = false; cleanupPdfUrl() }
 function statusLabel(status) {
-  const labels = { UNDER_LINE_MANAGER_REVIEW: 'SUBMITTED TO LINE MANAGER', LINE_MANAGER_RECOMMENDED: 'APPROVED BY LINE MANAGER', DGM_APPROVED: 'APPROVED BY DGM', DGM_REJECTED: 'REJECTED BY DGM', GM_REVIEW_REQUIRED: 'SENT TO GM/OPS', GM_REVIEWED: 'REVIEWED BY GM/OPS', DRAFT: 'DRAFT' }
+  const labels = {
+    UNDER_LINE_MANAGER_REVIEW: 'SUBMITTED TO LM/AM',
+    LINE_MANAGER_RECOMMENDED: 'FORWARDED BY LM/AM TO DGM',
+    DGM_APPROVED: 'FINAL APPROVED BY GM/OPS',
+    DGM_REJECTED: 'FINAL REJECTED BY GM/OPS',
+    GM_REVIEW_REQUIRED: 'FORWARDED BY DGM TO GM/OPS',
+    GM_REVIEWED: 'REVIEWED BY GM/OPS',
+    RETURNED_FOR_CLARIFICATION: 'RETURNED FOR CLARIFICATION',
+    DRAFT: 'DRAFT'
+  }
   return labels[status] || status
 }
 async function viewPdf(item) {
@@ -369,7 +390,6 @@ async function downloadPdf(item) { await downloadBlob(`/reports/inspection/${ite
 async function submitReview() {
   const i = reviewModal.item
   if (!i || !reviewModal.action) return
-
   actingId.value = i.id
   try {
     let endpoint = '/reviews/' + i.id + '/line-manager'
@@ -379,20 +399,20 @@ async function submitReview() {
       recommended_penalty_amount: 0,
       final_penalty_amount: 0
     }
-
     if (i.status === 'LINE_MANAGER_RECOMMENDED') endpoint = '/reviews/' + i.id + '/dgm'
     if (i.status === 'GM_REVIEW_REQUIRED') endpoint = '/reviews/' + i.id + '/gm'
-
     await api.post(endpoint, payload)
-    reviewModal.open = false
-    reviewModal.item = null
-    reviewModal.action = ''
-    reviewModal.comments = ''
+    closeReviewModalAfterSubmit()
     await loadPage()
     if (rows.value.length === 0 && pagination.page > 1) { pagination.page -= 1; await loadPage() }
   } finally { actingId.value = null }
 }
-
+function closeReviewModalAfterSubmit() {
+  reviewModal.open = false
+  reviewModal.item = null
+  reviewModal.action = ''
+  reviewModal.comments = ''
+}
 onMounted(loadPage)
 onBeforeUnmount(cleanupPdfUrl)
 </script>
@@ -428,15 +448,16 @@ onBeforeUnmount(cleanupPdfUrl)
 .mobile-action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
 .mobile-status-button { grid-column: 1 / -1; width: 100%; }
 .review-button { grid-column: 1 / -1; }
-
 .tracker-note { margin: 4px 0 0; color: #334155; font-size: 11px; line-height: 1.35; background: white; border: 1px solid #e2e8f0; border-radius: 10px; padding: 6px 8px; }
 .review-modal-card { width: min(680px, 100%); }
+.review-rule-box { display: grid; gap: 4px; margin-top: 14px; border: 1px solid #fde68a; background: #fffbeb; color: #78350f; border-radius: 16px; padding: 12px 14px; line-height: 1.4; }
 .review-form-grid { display: grid; gap: 14px; padding-top: 16px; }
 .form-field { display: grid; gap: 6px; }
 .remarks-input { resize: vertical; min-height: 120px; line-height: 1.45; }
 .review-preview-box { display: grid; gap: 4px; padding: 12px 14px; border: 1px solid #dbe3f0; border-radius: 16px; background: #f8fafc; color: #334155; }
 .review-preview-box strong { color: #0f172a; }
 .review-modal-actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; padding-top: 4px; }
+.badge.red { background: #fee2e2; color: #991b1b; }
 @media (max-width: 760px) {
   .desktop-table { display: none; }
   .mobile-list { display: grid; gap: 14px; }
