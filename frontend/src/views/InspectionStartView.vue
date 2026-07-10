@@ -11,15 +11,28 @@
         <p class="hint">Select KPI first. KPI-6 keeps the existing cleanliness form. Chemicals opens quantity inspection.</p>
       </div>
 
+      <label v-if="startOptions.can_emergency_start" class="emergency-toggle">
+        <input type="checkbox" v-model="form.is_emergency" @change="onEmergencyToggle" />
+        <span>
+          <strong>Emergency Inspection</strong>
+          <small>Use only when you are officially asked to inspect a station not assigned to you.</small>
+        </span>
+      </label>
+
+      <div v-if="form.is_emergency" class="card mini emergency-note">
+        <strong>Emergency station selection enabled</strong>
+        <p>This list shows all active stations. Contract will auto-fill after station selection. Emergency reason is mandatory and will be recorded with the inspection.</p>
+      </div>
+
       <div>
         <label class="label">Station</label>
         <select class="input" v-model="form.station_id" required>
-          <option value="">Select station</option>
-          <option v-for="s in startOptions.stations" :key="s.id" :value="s.id" :disabled="!s.is_startable">
-            {{ s.station_name }}{{ !s.is_startable ? ` - ${s.message}` : '' }}
+          <option value="">{{ form.is_emergency ? 'Select emergency station' : 'Select assigned station' }}</option>
+          <option v-for="s in activeStations" :key="s.id" :value="s.id" :disabled="!s.is_startable">
+            {{ s.station_name }}{{ s.is_directly_assigned ? ' (assigned)' : '' }}{{ !s.is_startable ? ` - ${s.message}` : '' }}
           </option>
         </select>
-        <p v-if="startOptions.message" class="hint warning">{{ startOptions.message }}</p>
+        <p v-if="startOptions.message && !form.is_emergency" class="hint warning">{{ startOptions.message }}</p>
       </div>
 
       <div class="grid grid-2">
@@ -33,6 +46,17 @@
           <input class="input" :value="inspectionTypeText" readonly />
         </div>
       </div>
+
+      <label v-if="form.is_emergency">
+        <span class="label">Emergency Reason</span>
+        <textarea
+          class="input"
+          rows="3"
+          v-model.trim="form.emergency_reason"
+          required
+          placeholder="Example: Directed by LM/Control due to leave/urgent requirement at this station"
+        ></textarea>
+      </label>
 
       <div class="card mini kpi-note" v-if="form.kpi_category === 'KPI_CHEMICALS'">
         <strong>Chemicals & Consumables KPI</strong>
@@ -60,11 +84,21 @@ import AppLayout from '../components/AppLayout.vue'
 import { api } from '../services/api'
 
 const router = useRouter()
-const startOptions = ref({ stations: [], inspection_type: '', current_role: '', message: '', kpi_categories: [] })
+const startOptions = ref({
+  stations: [],
+  emergency_stations: [],
+  inspection_type: '',
+  current_role: '',
+  message: '',
+  kpi_categories: [],
+  can_emergency_start: false
+})
 const error = ref('')
 const form = ref({
   station_id: '',
   kpi_category: 'KPI_6_CLEANLINESS',
+  is_emergency: false,
+  emergency_reason: '',
   latitude: null,
   longitude: null,
   gps_accuracy: null,
@@ -78,10 +112,11 @@ const fallbackKpiOptions = [
 ]
 
 const kpiOptions = computed(() => startOptions.value.kpi_categories?.length ? startOptions.value.kpi_categories : fallbackKpiOptions)
+const activeStations = computed(() => form.value.is_emergency ? (startOptions.value.emergency_stations || []) : (startOptions.value.stations || []))
 
 const selectedStation = computed(() => {
   const stationId = Number(form.value.station_id)
-  return startOptions.value.stations.find((s) => Number(s.id) === stationId) || null
+  return activeStations.value.find((s) => Number(s.id) === stationId) || null
 })
 
 const mappedContractText = computed(() => {
@@ -101,7 +136,16 @@ const gpsText = computed(() =>
     : 'Not captured'
 )
 
-const canStart = computed(() => Boolean(selectedStation.value?.is_startable))
+const canStart = computed(() => {
+  if (!selectedStation.value?.is_startable) return false
+  if (form.value.is_emergency && !String(form.value.emergency_reason || '').trim()) return false
+  return true
+})
+
+function onEmergencyToggle() {
+  form.value.station_id = ''
+  error.value = ''
+}
 
 function captureGps() {
   navigator.geolocation.getCurrentPosition(
@@ -130,15 +174,25 @@ async function start() {
     error.value = selectedStation.value?.message || 'Please select a mapped station with one active contract'
     return
   }
+  if (form.value.is_emergency && !String(form.value.emergency_reason || '').trim()) {
+    error.value = 'Emergency reason is required'
+    return
+  }
 
   try {
     const payload = {
       station_id: Number(form.value.station_id),
       kpi_category: form.value.kpi_category,
+      is_emergency: Boolean(form.value.is_emergency),
+      emergency_reason: form.value.is_emergency ? form.value.emergency_reason : null,
       latitude: form.value.latitude,
       longitude: form.value.longitude,
       gps_accuracy: form.value.gps_accuracy,
-      device_info: form.value.device_info,
+      device_info: {
+        ...form.value.device_info,
+        emergency_inspection_requested: Boolean(form.value.is_emergency),
+        selected_station_name: selectedStation.value?.station_name || null
+      },
       remarks: form.value.remarks
     }
     const { data } = await api.post('/inspections/start', payload)
@@ -152,6 +206,11 @@ async function start() {
 <style scoped>
 .mini { background: #f8fafc; }
 .kpi-note { border: 1px solid #bfdbfe; background: #eff6ff; color: #1e3a8a; }
+.emergency-toggle { display: flex; align-items: flex-start; gap: 12px; padding: 14px; border: 1px solid #fed7aa; border-radius: 16px; background: #fff7ed; color: #7c2d12; cursor: pointer; }
+.emergency-toggle input { margin-top: 4px; width: 18px; height: 18px; }
+.emergency-toggle strong { display: block; }
+.emergency-toggle small { display: block; margin-top: 3px; color: #9a3412; line-height: 1.35; }
+.emergency-note { border: 1px solid #fed7aa; background: #fff7ed; color: #7c2d12; }
 .error { color: #dc2626; font-weight: 700; }
 .hint { margin-top: 6px; font-size: 13px; }
 .warning { color: #b45309; font-weight: 600; }

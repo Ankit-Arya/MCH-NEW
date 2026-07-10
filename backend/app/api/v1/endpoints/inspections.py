@@ -41,6 +41,7 @@ from app.services.inspection_service import (
     soft_delete_entry,
     submit_entry_based_inspection,
     submit_inspection,
+    require_inspection_station_access_for_edit,
 )
 from app.services.media_service import EvidenceProcessingError, build_object_path, prepare_evidence_media, sha256_bytes, upload_bytes
 from app.services.audit_service import audit_log
@@ -49,6 +50,7 @@ from app.models.kpi_chemical import InspectionKpiContext, KPI_6_CLEANLINESS, KPI
 router = APIRouter()
 
 START_ADMIN_ROLES = {RoleCode.SUPER_ADMIN, RoleCode.HK_CELL_ADMIN}
+EMERGENCY_INSPECTION_ROLES = {RoleCode.STATION_MANAGER, RoleCode.EIT_MEMBER}
 ACTION_REQUIRED_STATUSES = {
     InspectionStatus.DRAFT,
     InspectionStatus.RETURNED_FOR_CLARIFICATION,
@@ -445,45 +447,63 @@ def login_notification_summary(db: Session = Depends(get_db), user: User = Depen
 def start_options(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Options for Start Inspection.
 
-    This endpoint is intentionally stricter than /master/bootstrap:
-    - Non-admin users see only stations explicitly mapped to their own user.
-    - UserLineAccess is NOT expanded here.
-    - Contract is returned as a derived read-only value from station mapping.
-    - Inspection type is returned as a derived read-only value from user role.
+    Normal station list remains restricted to stations directly mapped to the user.
+    Emergency station list is separately returned for SM/EIT users so the frontend can
+    show it only after the Emergency Inspection checkbox is selected.
     """
 
-    query = db.query(Station).filter(Station.is_active.is_(True)).order_by(Station.station_name)
+    kpi_categories = [
+        {"code": KPI_6_CLEANLINESS, "label": "KPI-6 Level of Cleanliness"},
+        {"code": KPI_CHEMICALS, "label": "KPI Chemicals & Consumables"},
+    ]
+    can_emergency_start = bool(user.role and user.role.code in EMERGENCY_INSPECTION_ROLES)
 
+    all_station_query = db.query(Station).filter(Station.is_active.is_(True)).order_by(Station.station_name)
+
+    normal_query = all_station_query
+    message = None
     if not _is_start_admin(user):
         station_ids = _explicit_user_station_ids(db, user)
         if not station_ids:
-            return {
-                "current_role": user.role.code.value if user.role else None,
-                "inspection_type": _inspection_type_for_user(user).value,
-                "kpi_categories": [
-                    {"code": KPI_6_CLEANLINESS, "label": "KPI-6 Level of Cleanliness"},
-                    {"code": KPI_CHEMICALS, "label": "KPI Chemicals & Consumables"},
-                ],
-                "stations": [],
-                "message": "No stations are directly mapped to this user.",
-            }
-        query = query.filter(Station.id.in_(station_ids))
+            normal_stations = []
+            message = "No stations are directly mapped to this user."
+        else:
+            normal_stations = [_station_contract_status(db, station) for station in normal_query.filter(Station.id.in_(station_ids)).all()]
+    else:
+        normal_stations = [_station_contract_status(db, station) for station in normal_query.all()]
 
-    stations = [_station_contract_status(db, station) for station in query.all()]
+    emergency_stations = []
+    if can_emergency_start and not _is_start_admin(user):
+        direct_station_ids = _explicit_user_station_ids(db, user)
+        for station in all_station_query.all():
+            row = _station_contract_status(db, station)
+            row["is_directly_assigned"] = station.id in direct_station_ids
+            emergency_stations.append(row)
+
     return {
         "current_role": user.role.code.value if user.role else None,
         "inspection_type": _inspection_type_for_user(user).value,
-        "kpi_categories": [
-            {"code": KPI_6_CLEANLINESS, "label": "KPI-6 Level of Cleanliness"},
-            {"code": KPI_CHEMICALS, "label": "KPI Chemicals & Consumables"},
-        ],
-        "stations": stations,
+        "kpi_categories": kpi_categories,
+        "stations": normal_stations,
+        "emergency_stations": emergency_stations,
+        "can_emergency_start": can_emergency_start,
+        "message": message,
     }
 
 
+
 @router.get("/checklist")
-def checklist(contract_id: int, station_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    require_station_access(db, user, station_id)
+def checklist(contract_id: int, station_id: int, inspection_id: int | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    try:
+        require_station_access(db, user, station_id)
+    except HTTPException as exc:
+        if exc.status_code != 403 or not inspection_id:
+            raise
+        inspection = db.get(Inspection, inspection_id)
+        if not inspection or int(inspection.station_id) != int(station_id):
+            raise
+        require_inspection_station_access_for_edit(db, user, inspection)
+
     contract = db.get(Contract, contract_id)
     if not contract:
         raise HTTPException(status_code=404, detail="Contract not found")
@@ -498,6 +518,7 @@ def checklist(contract_id: int, station_id: int, db: Session = Depends(get_db), 
         "attributes": attributes,
         "sub_areas": sub_areas,
     }
+
 
 
 @router.post("/start", response_model=InspectionOut)
@@ -571,7 +592,7 @@ async def upload_entry_media(
         raise HTTPException(status_code=404, detail="Inspection not found")
     if inspection.status not in [InspectionStatus.DRAFT, InspectionStatus.RETURNED_FOR_CLARIFICATION]:
         raise HTTPException(status_code=400, detail="Cannot upload media after submission")
-    require_station_access(db, user, inspection.station_id)
+    require_inspection_station_access_for_edit(db, user, inspection)
     entry = db.get(InspectionEntry, entry_id)
     if not entry or entry.inspection_id != inspection.id or entry.is_deleted:
         raise HTTPException(status_code=404, detail="Entry not found")
@@ -664,7 +685,7 @@ async def upload_media_legacy(
         raise HTTPException(status_code=404, detail="Inspection not found")
     if inspection.status not in [InspectionStatus.DRAFT, InspectionStatus.RETURNED_FOR_CLARIFICATION]:
         raise HTTPException(status_code=400, detail="Cannot upload media after submission")
-    require_station_access(db, user, inspection.station_id)
+    require_inspection_station_access_for_edit(db, user, inspection)
 
     data = await file.read()
     _validate_upload_file(media_type, file, data)

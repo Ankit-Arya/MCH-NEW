@@ -1,6 +1,10 @@
 from datetime import datetime, date
+import re
+
 from fastapi import HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
+
 from app.models.all_models import (
     Contract,
     ContractStation,
@@ -27,6 +31,7 @@ from app.services.audit_service import audit_log
 
 
 START_ADMIN_ROLES = {RoleCode.SUPER_ADMIN, RoleCode.HK_CELL_ADMIN}
+EMERGENCY_INSPECTION_ROLES = {RoleCode.STATION_MANAGER, RoleCode.EIT_MEMBER}
 
 
 def generate_inspection_no(station_id: int, user_id: int) -> str:
@@ -73,15 +78,67 @@ def _explicit_user_station_ids(db: Session, user: User) -> set[int]:
     }
 
 
-def _require_start_station_access(db: Session, user: User, station_id: int) -> None:
-    if _is_start_admin(user):
-        return
 
-    if int(station_id) not in _explicit_user_station_ids(db, user):
-        raise HTTPException(
-            status_code=403,
-            detail="You can start inspections only for stations directly mapped to your user.",
-        )
+def _is_emergency_station_start_allowed(user: User) -> bool:
+    return bool(user.role and user.role.code in EMERGENCY_INSPECTION_ROLES)
+
+
+def is_emergency_inspection(inspection: Inspection) -> bool:
+    device_info = inspection.device_info if isinstance(inspection.device_info, dict) else {}
+    return bool(device_info.get("emergency_inspection"))
+
+
+def require_inspection_station_access_for_edit(db: Session, user: User, inspection: Inspection) -> None:
+    """Allow normal station access or the original submitter's emergency inspection.
+
+    This is intentionally narrower than normal station access: emergency access is only
+    for the user who started that emergency inspection and only for field inspector roles.
+    """
+    try:
+        require_station_access(db, user, inspection.station_id)
+        return
+    except HTTPException as exc:
+        if exc.status_code != 403:
+            raise
+        if (
+            inspection.submitted_by == user.id
+            and _is_emergency_station_start_allowed(user)
+            and is_emergency_inspection(inspection)
+            and inspection.status in [InspectionStatus.DRAFT, InspectionStatus.RETURNED_FOR_CLARIFICATION]
+        ):
+            return
+        raise
+
+
+def _require_start_station_access(db: Session, user: User, payload: InspectionStartIn) -> bool:
+    """Return True when the start is an emergency inspection.
+
+    Normal start remains restricted to directly mapped stations.
+    Emergency start is allowed only for SM/EIT users and must carry a reason.
+    """
+    station_id = int(payload.station_id)
+    requested_emergency = bool(payload.is_emergency)
+    direct_station_ids = _explicit_user_station_ids(db, user)
+
+    if _is_start_admin(user):
+        return requested_emergency
+
+    if station_id in direct_station_ids:
+        return requested_emergency
+
+    if requested_emergency and _is_emergency_station_start_allowed(user):
+        reason = (payload.emergency_reason or payload.remarks or "").strip()
+        if len(reason) < 5:
+            raise HTTPException(
+                status_code=400,
+                detail="Emergency inspection reason is required when selecting a station not directly mapped to your user.",
+            )
+        return True
+
+    raise HTTPException(
+        status_code=403,
+        detail="You can start normal inspections only for stations directly mapped to your user. Use Emergency Inspection with reason if you are officially asked to inspect another station.",
+    )
 
 
 def _contract_for_start_station(db: Session, station_id: int) -> Contract:
@@ -114,7 +171,7 @@ def _contract_for_start_station(db: Session, station_id: int) -> Contract:
 
 
 def create_inspection(db: Session, payload: InspectionStartIn, user: User) -> Inspection:
-    _require_start_station_access(db, user, payload.station_id)
+    emergency_started = _require_start_station_access(db, user, payload)
 
     contract = _contract_for_start_station(db, payload.station_id)
     inspection_type = _inspection_type_for_user(user)
@@ -133,6 +190,22 @@ def create_inspection(db: Session, payload: InspectionStartIn, user: User) -> In
         )
 
     now = datetime.utcnow()
+    device_info = dict(payload.device_info or {})
+    remarks = payload.remarks
+    workflow_action = "START_EMERGENCY" if emergency_started else "START"
+    workflow_remarks = "Inspection started"
+    if emergency_started:
+        reason = (payload.emergency_reason or payload.remarks or "").strip()
+        device_info.update({
+            "emergency_inspection": True,
+            "emergency_reason": reason,
+            "emergency_started_by_user_id": user.id,
+            "normal_station_assignment_bypassed": int(payload.station_id) not in _explicit_user_station_ids(db, user),
+        })
+        workflow_remarks = f"Emergency inspection started. Reason: {reason or 'Not provided'}"
+        if reason and not remarks:
+            remarks = f"Emergency inspection: {reason}"
+
     inspection = Inspection(
         inspection_no=generate_inspection_no(payload.station_id, user.id),
         contract_id=contract.id,
@@ -144,15 +217,15 @@ def create_inspection(db: Session, payload: InspectionStartIn, user: User) -> In
         latitude=payload.latitude,
         longitude=payload.longitude,
         gps_accuracy=payload.gps_accuracy,
-        device_info=payload.device_info,
-        remarks=payload.remarks,
+        device_info=device_info,
+        remarks=remarks,
         is_before_10am=now.hour < 10,
         is_late=now.hour >= 10 and inspection_type == InspectionType.SM_INSPECTION,
     )
     db.add(inspection)
     db.flush()
-    db.add(InspectionWorkflowHistory(inspection_id=inspection.id, from_status=None, to_status=InspectionStatus.DRAFT.value, action_by=user.id, action="START", remarks="Inspection started"))
-    audit_log(db, actor=user, action="INSPECTION_STARTED", entity_type="Inspection", entity_id=inspection.id)
+    db.add(InspectionWorkflowHistory(inspection_id=inspection.id, from_status=None, to_status=InspectionStatus.DRAFT.value, action_by=user.id, action=workflow_action, remarks=workflow_remarks))
+    audit_log(db, actor=user, action="INSPECTION_STARTED_EMERGENCY" if emergency_started else "INSPECTION_STARTED", entity_type="Inspection", entity_id=inspection.id, new_value={"station_id": payload.station_id, "emergency": emergency_started})
     db.commit()
     db.refresh(inspection)
     return inspection
@@ -168,17 +241,97 @@ def _grade_for_inspection(db: Session, inspection: Inspection, grade_code: str) 
     return grade
 
 
+def _normalise_custom_sub_area_name(value: str | None) -> str | None:
+    name = " ".join(str(value or "").split())
+    if not name:
+        return None
+    if len(name) < 2:
+        raise HTTPException(status_code=422, detail="Other sub-area name must be at least 2 characters")
+    if len(name) > 250:
+        raise HTTPException(status_code=422, detail="Other sub-area name must not exceed 250 characters")
+    return name
+
+
+def _custom_sub_area_slug(name: str) -> str:
+    slug = re.sub(r"[^A-Z0-9]+", "_", name.upper()).strip("_")
+    return (slug or "OTHER")[:45]
+
+
+def _unique_custom_sub_area_code(db: Session, attribute_id: int, name: str) -> str:
+    base = f"CUSTOM_{attribute_id}_{_custom_sub_area_slug(name)}"[:92]
+    code = base
+    suffix_no = 2
+    while db.query(InspectionSubArea).filter(InspectionSubArea.code == code).first():
+        suffix = f"_{suffix_no}"
+        code = f"{base[:100 - len(suffix)]}{suffix}"
+        suffix_no += 1
+    return code
+
+
+def _get_or_create_custom_sub_area(db: Session, attribute: InspectionAttribute, custom_name: str) -> InspectionSubArea:
+    name = _normalise_custom_sub_area_name(custom_name)
+    if not name:
+        raise HTTPException(status_code=422, detail="Other sub-area name is required")
+
+    existing = (
+        db.query(InspectionSubArea)
+        .filter(
+            InspectionSubArea.attribute_id == attribute.id,
+            func.lower(func.trim(InspectionSubArea.name)) == name.lower(),
+        )
+        .first()
+    )
+    if existing:
+        if not existing.is_active:
+            existing.is_active = True
+        return existing
+
+    max_sort = (
+        db.query(func.max(InspectionSubArea.sort_order))
+        .filter(InspectionSubArea.attribute_id == attribute.id)
+        .scalar()
+        or 0
+    )
+    sub_area = InspectionSubArea(
+        attribute_id=attribute.id,
+        code=_unique_custom_sub_area_code(db, attribute.id, name),
+        name=name,
+        photo_min_required=1,
+        photo_max_allowed=3,
+        video_required=False,
+        video_max_seconds=15,
+        allow_na=True,
+        sort_order=int(max_sort) + 1,
+        is_active=True,
+    )
+    db.add(sub_area)
+    db.flush()
+    return sub_area
+
+
+def _resolve_sub_area(db: Session, attribute: InspectionAttribute, payload: InspectionEntryCreate) -> InspectionSubArea:
+    custom_name = _normalise_custom_sub_area_name(payload.custom_sub_area_name)
+    if custom_name:
+        return _get_or_create_custom_sub_area(db, attribute, custom_name)
+
+    if payload.sub_area_id is None:
+        raise HTTPException(status_code=422, detail="Select a sub-area or enter Other sub-area name")
+
+    sub_area = db.get(InspectionSubArea, payload.sub_area_id)
+    if not sub_area or not sub_area.is_active or sub_area.attribute_id != attribute.id:
+        raise HTTPException(status_code=400, detail="Invalid sub-area for selected attribute")
+    return sub_area
+
+
 def save_entry(db: Session, inspection: Inspection, payload: InspectionEntryCreate, user: User) -> InspectionEntry:
     if inspection.status not in [InspectionStatus.DRAFT, InspectionStatus.RETURNED_FOR_CLARIFICATION]:
         raise HTTPException(status_code=400, detail="Entries can be added only while inspection is draft/returned")
-    require_station_access(db, user, inspection.station_id)
+    require_inspection_station_access_for_edit(db, user, inspection)
 
     attribute = db.get(InspectionAttribute, payload.attribute_id)
     if not attribute or not attribute.is_active:
         raise HTTPException(status_code=400, detail="Invalid inspection attribute")
-    sub_area = db.get(InspectionSubArea, payload.sub_area_id)
-    if not sub_area or not sub_area.is_active or sub_area.attribute_id != attribute.id:
-        raise HTTPException(status_code=400, detail="Invalid sub-area for selected attribute")
+    sub_area = _resolve_sub_area(db, attribute, payload)
     grade = _grade_for_inspection(db, inspection, payload.grade_code)
 
     entry = InspectionEntry(
@@ -188,7 +341,7 @@ def save_entry(db: Session, inspection: Inspection, payload: InspectionEntryCrea
         sub_area_id=sub_area.id,
         grade_code=grade.grade_code,
         grade_percentage=grade.percentage,
-        remarks=payload.remarks,
+        remarks=remarks,
         captured_latitude=payload.captured_latitude,
         captured_longitude=payload.captured_longitude,
         gps_accuracy=payload.gps_accuracy,
@@ -197,7 +350,19 @@ def save_entry(db: Session, inspection: Inspection, payload: InspectionEntryCrea
     )
     db.add(entry)
     db.flush()
-    audit_log(db, actor=user, action="INSPECTION_ENTRY_CREATED", entity_type="InspectionEntry", entity_id=entry.id, new_value={"inspection_id": inspection.id, "entry_no": entry.entry_no})
+    audit_log(
+        db,
+        actor=user,
+        action="INSPECTION_ENTRY_CREATED",
+        entity_type="InspectionEntry",
+        entity_id=entry.id,
+        new_value={
+            "inspection_id": inspection.id,
+            "entry_no": entry.entry_no,
+            "sub_area_id": sub_area.id,
+            "custom_sub_area_name": payload.custom_sub_area_name,
+        },
+    )
     db.commit()
     db.refresh(entry)
     return entry
@@ -266,7 +431,7 @@ def list_entries(db: Session, inspection_id: int) -> list[dict]:
 def soft_delete_entry(db: Session, inspection: Inspection, entry_id: int, user: User) -> None:
     if inspection.status not in [InspectionStatus.DRAFT, InspectionStatus.RETURNED_FOR_CLARIFICATION]:
         raise HTTPException(status_code=400, detail="Entries can be deleted only before submission")
-    require_station_access(db, user, inspection.station_id)
+    require_inspection_station_access_for_edit(db, user, inspection)
     entry = db.get(InspectionEntry, entry_id)
     if not entry or entry.inspection_id != inspection.id or entry.is_deleted:
         raise HTTPException(status_code=404, detail="Entry not found")
@@ -284,7 +449,7 @@ def save_draft(db: Session, inspection: Inspection, payload: InspectionDraftIn, 
     """
     if inspection.status not in [InspectionStatus.DRAFT, InspectionStatus.RETURNED_FOR_CLARIFICATION]:
         raise HTTPException(status_code=400, detail="Only draft or returned inspection can be edited")
-    require_station_access(db, user, inspection.station_id)
+    require_inspection_station_access_for_edit(db, user, inspection)
 
     grading_options = {
         (g.scheme_id, g.grade_code): g for g in db.query(GradingOption).filter(GradingOption.scheme_id == inspection.contract.grading_scheme_id).all()
@@ -340,7 +505,7 @@ def submit_inspection(db: Session, inspection: Inspection, payload: InspectionDr
 def submit_entry_based_inspection(db: Session, inspection: Inspection, user: User, remarks: str | None = None) -> Inspection:
     if inspection.status not in [InspectionStatus.DRAFT, InspectionStatus.RETURNED_FOR_CLARIFICATION]:
         raise HTTPException(status_code=400, detail="Only draft or returned inspection can be submitted")
-    require_station_access(db, user, inspection.station_id)
+    require_inspection_station_access_for_edit(db, user, inspection)
     entries = db.query(InspectionEntry).filter(
         InspectionEntry.inspection_id == inspection.id,
         InspectionEntry.is_deleted == False,  # noqa: E712

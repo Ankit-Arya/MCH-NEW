@@ -3,7 +3,7 @@
     <section class="hero-panel card entry-hero">
       <div>
         <h1>{{ isChemicalKpi ? 'Chemical Quantity Inspection' : 'Inspection Entry Capture' }}</h1>
-        <p class="hero-subtitle">{{ isChemicalKpi ? 'Inspect station-wise Chemicals & Consumables by comparing required quantity with actual available quantity.' : 'Select only the area being inspected. Each saved entry belongs to the same inspection number, with its own attribute, sub-area, grade, evidence and capture metadata.' }}</p>
+        <p class="hero-subtitle">{{ isChemicalKpi ? 'Inspect station-wise Chemicals & Consumables by comparing required quantity with actual available quantity.' : 'Search attributes/sub-areas by keyword, or add Other sub-area when the inspected location is not listed.' }}</p>
       </div>
       <div v-if="inspection" class="inspection-badges">
         <span class="badge blue">{{ inspection.inspection_no }}</span>
@@ -47,7 +47,7 @@
         <div class="card-title">
           <div>
             <h2>Add Selected Area Entry</h2>
-            <p class="muted">Photo evidence is mandatory as per selected sub-area master data. Save Entry is unlocked only after the required photos are captured/selected.</p>
+            <p class="muted">Type inside Attribute/Sub-area fields to filter suggestions. Select Other to add a missing sub-area during inspection.</p>
           </div>
         </div>
 
@@ -179,6 +179,7 @@ function getPhotoFiles(){
 }
 
 function getSubAreaById(id){
+  if (!id) return null
   return subAreas.value.find(s => Number(s.id) === Number(id)) || null
 }
 
@@ -262,17 +263,33 @@ async function uploadFile(entryId, file, mediaType){
   await api.post(`/inspections/${route.params.id}/entries/${entryId}/media`, fd)
 }
 
+function resolveSelectedSubAreaForSave(form){
+  const customName = String(form.custom_sub_area_name || '').trim()
+  if (customName) {
+    return {
+      id: null,
+      name: customName,
+      photo_min_required: 1,
+      photo_max_allowed: 3,
+      is_custom: true,
+    }
+  }
+  return getSubAreaById(form.sub_area_id)
+}
+
 async function saveEntry(form){
   error.value = ''; message.value = ''
   if (!canEdit.value) { error.value = 'This inspection is already submitted/locked'; return }
 
-  const subArea = getSubAreaById(form.sub_area_id)
+  const customSubAreaName = String(form.custom_sub_area_name || '').trim()
+  const subArea = resolveSelectedSubAreaForSave(form)
   const minRequired = Math.max(1, Number(subArea?.photo_min_required || 1))
   const maxAllowed = Math.max(minRequired, Number(subArea?.photo_max_allowed || 3))
   const photos = getPhotoFiles()
   const hadVideo = !!media.value.video
 
-  if (!subArea) { error.value = 'Please select a valid sub-area before saving'; return }
+  if (!subArea) { error.value = 'Please select a valid sub-area or choose Other before saving'; return }
+  if (customSubAreaName && customSubAreaName.length < 2) { error.value = 'Other sub-area name must be at least 2 characters'; return }
   if (photos.length < minRequired) { error.value = `This sub-area requires ${minRequired} photo${minRequired === 1 ? '' : 's'}. Selected: ${photos.length}`; return }
   if (photos.length > maxAllowed) { error.value = `Maximum ${maxAllowed} photo${maxAllowed === 1 ? '' : 's'} allowed for this sub-area`; return }
   if (!metadata.captured_at) captureGps()
@@ -283,7 +300,8 @@ async function saveEntry(form){
   try {
     const payload = {
       attribute_id: form.attribute_id,
-      sub_area_id: form.sub_area_id,
+      sub_area_id: customSubAreaName ? null : form.sub_area_id,
+      custom_sub_area_name: customSubAreaName || null,
       grade_code: form.grade_code,
       remarks: form.remarks,
       captured_latitude: metadata.latitude,
@@ -321,7 +339,7 @@ async function saveEntry(form){
     await loadEntries()
     clearMedia()
     entryFormRef.value?.resetForm()
-    message.value = `${entry.entry_no} saved with ${photos.length} photo${photos.length === 1 ? '' : 's'}${hadVideo ? ' and video' : ''}.`
+    message.value = `${entry.entry_no} saved for ${entry.sub_area_name || subArea.name} with ${photos.length} photo${photos.length === 1 ? '' : 's'}${hadVideo ? ' and video' : ''}.`
   } catch (e) {
     const reason = `${e.uploadLabel ? e.uploadLabel + ': ' : ''}${apiErrorText(e, 'Unable to save entry')}`
     error.value = uploadFailed
@@ -425,7 +443,7 @@ onMounted(async()=>{
       await loadChemicalRequirements()
       await loadChemicalEntries()
     } else {
-      const check = (await api.get(`/inspections/checklist?contract_id=${contractId}&station_id=${stationId}`)).data
+      const check = (await api.get('/inspections/checklist', { params: { contract_id: contractId, station_id: stationId, inspection_id: inspection.value.id } })).data
       checklist.value = { attributes: check.attributes || [], grades: check.grades || check.grading_options || [] }
       await loadEntries()
     }

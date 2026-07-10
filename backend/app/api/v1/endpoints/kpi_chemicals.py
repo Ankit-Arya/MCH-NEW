@@ -20,6 +20,7 @@ from app.models.kpi_chemical import (
     StationChemicalRequirement,
 )
 from app.services.audit_service import audit_log
+from app.services.inspection_service import require_inspection_station_access_for_edit
 from app.schemas.inspection import InspectionOut
 
 router = APIRouter()
@@ -135,7 +136,7 @@ def _ensure_editable(db: Session, inspection: Inspection, user: User) -> None:
     _ensure_chemical_inspection(db, inspection)
     if inspection.status not in [InspectionStatus.DRAFT, InspectionStatus.RETURNED_FOR_CLARIFICATION]:
         raise HTTPException(status_code=400, detail="Chemical entries can be edited only while inspection is draft/returned")
-    require_station_access(db, user, inspection.station_id)
+    require_inspection_station_access_for_edit(db, user, inspection)
 
 
 def _requirement_for(db: Session, station_id: int, chemical_id: int) -> StationChemicalRequirement:
@@ -319,7 +320,18 @@ def inspection_requirements(inspection_id: int, db: Session = Depends(get_db), u
         raise HTTPException(status_code=404, detail="Inspection not found")
     require_inspection_access(db, user, inspection)
     _ensure_chemical_inspection(db, inspection)
-    requirements = list_station_requirements(inspection.station_id, include_inactive=False, db=db, user=user)
+    requirements = [
+        _requirement_row(row)
+        for row in db.query(StationChemicalRequirement)
+        .join(KpiChemical, KpiChemical.id == StationChemicalRequirement.chemical_id)
+        .filter(
+            StationChemicalRequirement.station_id == inspection.station_id,
+            StationChemicalRequirement.is_active.is_(True),
+            KpiChemical.is_active.is_(True),
+        )
+        .order_by(KpiChemical.sort_order, KpiChemical.name)
+        .all()
+    ]
     entries = {
         row.chemical_id: _entry_row(row)
         for row in db.query(ChemicalInspectionEntry).filter_by(inspection_id=inspection.id, is_deleted=False).all()

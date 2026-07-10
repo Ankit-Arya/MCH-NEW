@@ -29,6 +29,8 @@ class InspectionStartIn(BaseModel):
     gps_accuracy: float | None = None
     device_info: dict | None = None
     remarks: str | None = None
+    is_emergency: bool = False
+    emergency_reason: str | None = None
 
 
 class InspectionDraftIn(BaseModel):
@@ -47,7 +49,10 @@ class InspectionSubmitIn(InspectionDraftIn):
 
 class InspectionEntryCreate(BaseModel):
     attribute_id: int
-    sub_area_id: int
+    # Normal path: existing sub-area id from master data.
+    # Other path: keep sub_area_id null and send custom_sub_area_name.
+    sub_area_id: int | None = None
+    custom_sub_area_name: str | None = Field(default=None, max_length=250)
     grade_code: str
     remarks: str | None = None
     captured_latitude: float | None = None
