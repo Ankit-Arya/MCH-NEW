@@ -474,6 +474,58 @@ class Notification(Base, TimestampMixin):
     is_read: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class HelpTopic(Base, TimestampMixin):
+    __tablename__ = "help_topics"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(240), nullable=False, index=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="OPEN", nullable=False, index=True)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    answered_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime)
+    view_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    is_pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    author: Mapped[User] = relationship(foreign_keys=[created_by])
+    answerer: Mapped[User | None] = relationship(foreign_keys=[answered_by])
+    comments: Mapped[list["HelpComment"]] = relationship(back_populates="topic", cascade="all, delete-orphan")
+    media: Mapped[list["HelpMedia"]] = relationship(back_populates="topic", cascade="all, delete-orphan")
+
+
+class HelpComment(Base, TimestampMixin):
+    __tablename__ = "help_comments"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    topic_id: Mapped[int] = mapped_column(ForeignKey("help_topics.id"), nullable=False, index=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    is_admin_answer: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    topic: Mapped[HelpTopic] = relationship(back_populates="comments")
+    author: Mapped[User] = relationship()
+    media: Mapped[list["HelpMedia"]] = relationship(back_populates="comment")
+
+
+class HelpMedia(Base, TimestampMixin):
+    __tablename__ = "help_media"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    topic_id: Mapped[int] = mapped_column(ForeignKey("help_topics.id"), nullable=False, index=True)
+    comment_id: Mapped[int | None] = mapped_column(ForeignKey("help_comments.id"), index=True)
+    object_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    original_file_name: Mapped[str] = mapped_column(String(250), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(120))
+    file_size: Mapped[int | None] = mapped_column(Integer)
+    checksum: Mapped[str | None] = mapped_column(String(128), index=True)
+    uploaded_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    topic: Mapped[HelpTopic] = relationship(back_populates="media")
+    comment: Mapped[HelpComment | None] = relationship(back_populates="media")
+    uploader: Mapped[User] = relationship()
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[int] = mapped_column(primary_key=True)

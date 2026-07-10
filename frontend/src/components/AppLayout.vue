@@ -45,6 +45,7 @@
           Weekly Compliance
           <span v-if="weeklyPendingBadge" class="nav-review-pill compliance-pill">{{ weeklyPendingBadge }}</span>
         </RouterLink>
+        <RouterLink to="/help" @click="closeMobileMenu">Help Forum</RouterLink>
         <RouterLink to="/reports" @click="closeMobileMenu">Reports & PDFs</RouterLink>
         <RouterLink to="/reviews" @click="closeMobileMenu">
           Review Queue

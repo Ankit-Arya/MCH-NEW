@@ -6,6 +6,7 @@ import InspectionStartView from '../views/InspectionStartView.vue'
 import InspectionFormView from '../views/InspectionFormView.vue'
 import ActionRequiredView from '../views/ActionRequiredView.vue'
 import WeeklyComplianceView from '../views/WeeklyComplianceView.vue'
+import HelpForumView from '../views/HelpForumView.vue'
 import ReviewQueueView from '../views/ReviewQueueView.vue'
 import KpiDashboardView from '../views/KpiDashboardView.vue'
 import MasterDataView from '../views/MasterDataView.vue'
@@ -21,6 +22,7 @@ const routes = [
   { path: '/inspections/action-required', component: ActionRequiredView, meta: { requiresAuth: true } },
   { path: '/inspections/weekly-compliance', component: WeeklyComplianceView, meta: { requiresAuth: true } },
   { path: '/inspections/:id', component: InspectionFormView, meta: { requiresAuth: true } },
+  { path: '/help', component: HelpForumView, meta: { requiresAuth: true } },
   { path: '/reports', component: ReportsView, meta: { requiresAuth: true } },
   { path: '/reviews', component: ReviewQueueView, meta: { requiresAuth: true } },
   { path: '/kpi', component: KpiDashboardView, meta: { requiresAuth: true } },
