@@ -72,7 +72,7 @@
         <span class="muted">{{ filteredRows.length }} row{{ filteredRows.length === 1 ? '' : 's' }} shown</span>
       </div>
 
-      <div class="table-wrap compliance-table-wrap">
+      <div class="table-wrap compliance-table-wrap mobile-cards">
         <table class="table compliance-table">
           <thead>
             <tr>
@@ -89,21 +89,21 @@
           </thead>
           <tbody>
             <tr v-for="row in filteredRows" :key="`${row.inspector_id}-${row.station_id || 'none'}`" :class="{ pending: row.remaining > 0, complete: row.is_complete }">
-              <td>
+              <td data-label="Inspector">
                 <strong>{{ row.inspector_name }}</strong><br />
                 <span class="muted small-text">{{ row.username }} · {{ row.emp_number || 'No emp no' }} · {{ row.role_label }}</span>
               </td>
-              <td>
+              <td data-label="Station">
                 <strong>{{ row.station_name }}</strong><br />
                 <span class="muted small-text">{{ row.station_code || '-' }}</span>
               </td>
-              <td>{{ row.required }}</td>
-              <td>{{ row.completed }}</td>
-              <td><strong>{{ row.remaining }}</strong></td>
-              <td><span class="badge" :class="statusClass(row)">{{ statusLabel(row.status) }}</span></td>
-              <td>{{ row.line_manager || '-' }}</td>
-              <td>{{ row.dgm || '-' }}</td>
-              <td>{{ row.gm || '-' }}</td>
+              <td data-label="Target">{{ row.required }}</td>
+              <td data-label="Done">{{ row.completed }}</td>
+              <td data-label="Remaining"><strong>{{ row.remaining }}</strong></td>
+              <td data-label="Status"><span class="badge" :class="statusClass(row)">{{ statusLabel(row.status) }}</span></td>
+              <td data-label="Line Manager">{{ row.line_manager || '-' }}</td>
+              <td data-label="DGM">{{ row.dgm || '-' }}</td>
+              <td data-label="GM/Ops">{{ row.gm || '-' }}</td>
             </tr>
             <tr v-if="!filteredRows.length">
               <td colspan="9" class="muted">No rows match the selected filters.</td>
@@ -219,4 +219,21 @@ onMounted(load)
   .hero-row { display: grid; }
   .summary-grid, .toolbar-grid { grid-template-columns: 1fr; }
 }
+
+
+/* MOBILE-FIRST WEEKLY COMPLIANCE PATCH */
+@media (max-width: 700px) {
+  .summary-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .summary-card { padding: 13px; border-radius: 16px; }
+  .summary-card strong { font-size: 26px; }
+  .week-strip { display: grid; gap: 6px; }
+  .compliance-table { min-width: 0; }
+  .compliance-table tbody tr.pending,
+  .compliance-table tbody tr.complete { background: white; }
+  .compliance-table td { align-items: start; }
+}
+@media (max-width: 420px) {
+  .summary-grid { grid-template-columns: 1fr; }
+}
+/* END MOBILE-FIRST WEEKLY COMPLIANCE PATCH */
 </style>

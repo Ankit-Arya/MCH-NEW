@@ -497,4 +497,32 @@ onBeforeUnmount(cleanupMediaUrl)
   .search-bar { grid-template-columns: 1fr; }
   .detail-header, .media-modal-header { flex-direction: column; }
 }
+
+
+/* MOBILE-FIRST HELP FORUM PATCH */
+@media (max-width: 760px) {
+  .forum-list-card,
+  .topic-detail-card { min-height: auto; }
+  .topic-card-head,
+  .comment-head,
+  .detail-header,
+  .media-modal-header { display: grid; grid-template-columns: 1fr; }
+  .topic-card { padding: 12px; border-radius: 16px; }
+  .topic-card p { -webkit-line-clamp: 3; }
+  .topic-meta { display: grid; grid-template-columns: 1fr; gap: 4px; }
+  .question-body,
+  .comment-card,
+  .admin-box { padding: 12px; border-radius: 16px; }
+  .form-actions { display: grid; grid-template-columns: 1fr; justify-content: stretch; }
+  .media-list { display: grid; grid-template-columns: 1fr; }
+  .media-chip { width: 100%; border-radius: 14px; text-align: left; overflow-wrap: anywhere; }
+  .media-modal-backdrop { padding: 10px; align-items: end; }
+  .media-modal-card { width: 100%; max-height: calc(100svh - 20px); border-radius: 18px 18px 0 0; padding: 14px; }
+  .media-preview-body { min-height: 180px; }
+  .media-preview-body img,
+  .media-preview-body video { max-height: 68svh; }
+  .media-preview-body iframe { height: 72svh; }
+  .floating-error { left: 10px; right: 10px; bottom: 10px; max-width: none; }
+}
+/* END MOBILE-FIRST HELP FORUM PATCH */
 </style>

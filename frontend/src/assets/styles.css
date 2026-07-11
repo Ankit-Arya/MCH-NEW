@@ -175,3 +175,242 @@ h3 { font-size: 15px; color: var(--ink); line-height: 1.25; }
   .badge { white-space: normal; }
   .chart-box { height: 200px; }
 }
+
+
+/* MOBILE-FIRST HARDENING PATCH */
+html.mobile-nav-locked,
+body.mobile-nav-locked {
+  overscroll-behavior: none;
+}
+
+body.mobile-nav-locked {
+  position: fixed;
+  width: 100%;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.mobile-scroll-area {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 820px) {
+  :root {
+    --page-pad: 12px;
+    --card-radius: 18px;
+  }
+
+  html,
+  body,
+  #app {
+    min-height: 100svh;
+  }
+
+  body {
+    font-size: 15px;
+  }
+
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  .page {
+    overflow-x: hidden;
+  }
+
+  .content,
+  .card,
+  .hero-panel,
+  .table-wrap,
+  .toolbar,
+  .filter-grid,
+  .stat-grid,
+  .grid {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .card {
+    padding: 14px;
+    border-radius: 18px;
+    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
+  }
+
+  .hero-panel {
+    display: grid;
+    gap: 12px;
+  }
+
+  .hero-subtitle {
+    line-height: 1.45;
+    font-size: 14px;
+  }
+
+  .toolbar,
+  .form-actions,
+  .button-row,
+  .review-modal-actions,
+  .submit-actions,
+  .pdf-actions,
+  .pagination-bar {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    justify-content: stretch;
+    gap: 10px;
+    width: 100%;
+  }
+
+  .toolbar > *,
+  .form-actions > *,
+  .button-row > *,
+  .review-modal-actions > *,
+  .submit-actions > *,
+  .pdf-actions > *,
+  .pagination-bar > * {
+    min-width: 0;
+  }
+
+  .btn,
+  a.btn,
+  button.btn {
+    width: 100%;
+    min-height: 44px;
+    white-space: normal;
+    text-align: center;
+  }
+
+  .btn-sm {
+    min-height: 40px;
+  }
+
+  .grid-2,
+  .grid-3,
+  .grid-4,
+  .filter-grid,
+  .stat-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .span-2 {
+    grid-column: auto !important;
+  }
+
+  .table-wrap {
+    width: 100%;
+    max-width: calc(100vw - 24px);
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-radius: 16px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .table {
+    min-width: 720px;
+  }
+
+  .table th,
+  .table td {
+    padding: 10px 11px;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .desktop-table {
+    display: none !important;
+  }
+
+  .mobile-list {
+    display: grid !important;
+    gap: 12px;
+  }
+
+  .review-notice-modal,
+  .tracker-modal-card,
+  .media-modal-card {
+    width: min(100%, calc(100vw - 24px));
+    max-height: calc(100svh - 24px);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+@media (max-width: 700px) {
+  .table-wrap.mobile-cards {
+    overflow-x: visible;
+    border: 0;
+    background: transparent;
+    border-radius: 0;
+  }
+
+  .table-wrap.mobile-cards .table {
+    min-width: 0;
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0 12px;
+  }
+
+  .table-wrap.mobile-cards thead {
+    display: none;
+  }
+
+  .table-wrap.mobile-cards tbody,
+  .table-wrap.mobile-cards tr {
+    display: block;
+    width: 100%;
+  }
+
+  .table-wrap.mobile-cards tr {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 10px 12px;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, .06);
+    margin-bottom: 12px;
+  }
+
+  .table-wrap.mobile-cards td {
+    display: grid;
+    grid-template-columns: minmax(96px, 38%) minmax(0, 1fr);
+    gap: 12px;
+    border-bottom: 1px solid #edf2f7;
+    padding: 10px 0;
+    text-align: right;
+  }
+
+  .table-wrap.mobile-cards td:last-child {
+    border-bottom: 0;
+  }
+
+  .table-wrap.mobile-cards td::before {
+    content: attr(data-label);
+    color: #64748b;
+    font-size: 12px;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    text-align: left;
+  }
+}
+
+@media (max-width: 420px) {
+  .content {
+    padding-left: 10px !important;
+    padding-right: 10px !important;
+  }
+
+  .table-wrap {
+    max-width: calc(100vw - 20px);
+  }
+
+  .card-title {
+    display: grid;
+    gap: 8px;
+  }
+}
+/* END MOBILE-FIRST HARDENING PATCH */

@@ -216,4 +216,13 @@ async function start() {
 .warning { color: #b45309; font-weight: 600; }
 .input[readonly] { background: #f8fafc; color: #334155; }
 button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+
+/* MOBILE-FIRST START INSPECTION PATCH */
+@media (max-width: 760px) {
+  form.card.grid { gap: 14px; }
+  .mini { padding: 12px; }
+  .hint { line-height: 1.4; }
+}
+/* END MOBILE-FIRST START INSPECTION PATCH */
 </style>
