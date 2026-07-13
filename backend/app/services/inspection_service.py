@@ -341,7 +341,7 @@ def save_entry(db: Session, inspection: Inspection, payload: InspectionEntryCrea
         sub_area_id=sub_area.id,
         grade_code=grade.grade_code,
         grade_percentage=grade.percentage,
-        remarks=remarks,
+        remarks=payload.remarks,
         captured_latitude=payload.captured_latitude,
         captured_longitude=payload.captured_longitude,
         gps_accuracy=payload.gps_accuracy,
