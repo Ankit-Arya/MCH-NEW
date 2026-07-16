@@ -85,6 +85,11 @@
                 v-model.trim="searchQuery"
                 :placeholder="`Search ${activeSection.label.toLowerCase()}`"
               />
+              <select class="input status-select" v-model="recordStatusFilter">
+                <option value="ALL">All status</option>
+                <option value="ACTIVE">Active only</option>
+                <option value="INACTIVE">Inactive only</option>
+              </select>
               <button v-if="data.can_manage_master" class="btn btn-outline" type="button" @click="clearCurrentForm">
                 New / Clear
               </button>
@@ -216,6 +221,7 @@
                 :empty-text="`No ${activeSection.label.toLowerCase()} found.`"
                 @edit="editCurrent"
                 @deactivate="deactivateCurrent"
+                @activate="activateCurrent"
               />
             </template>
 
@@ -230,6 +236,7 @@
                     empty-text="No grading schemes found."
                     @edit="editGradingScheme"
                     @deactivate="id => deactivate('/master/grading-schemes', id)"
+                    @activate="id => activate('/master/grading-schemes', id)"
                   />
                 </div>
                 <div>
@@ -262,6 +269,7 @@ const auth = useAuthStore()
 const loading = ref(false)
 const activeTab = ref('lines')
 const searchQuery = ref('')
+const recordStatusFilter = ref('ALL')
 const message = ref('')
 const error = ref('')
 
@@ -296,7 +304,7 @@ const MasterTable = defineComponent({
     canManage: { type: Boolean, default: false },
     emptyText: { type: String, default: 'No records found.' }
   },
-  emits: ['edit', 'deactivate'],
+  emits: ['edit', 'deactivate', 'activate'],
   setup(props, { emit }) {
     return () => h('div', { class: 'table-wrap mobile-cards' }, [
       h('table', { class: 'table master-table' }, [
@@ -309,12 +317,17 @@ const MasterTable = defineComponent({
               ...props.columns.map((column) => h('td', { key: column.key || column.label, 'data-label': column.label }, formatCellValue(column.render ? column.render(row) : row[column.key]))),
               ...(props.canManage ? [h('td', { key: 'actions', 'data-label': 'Actions', class: 'table-actions' }, [
                 h('button', { class: 'btn btn-sm btn-outline', type: 'button', onClick: () => emit('edit', row) }, 'Edit'),
-                h('button', {
-                  class: ['btn', 'btn-sm', 'btn-outline', 'danger-action'],
-                  type: 'button',
-                  disabled: row.is_active === false,
-                  onClick: () => row.is_active === false ? null : emit('deactivate', row.id)
-                }, row.is_active === false ? 'Inactive' : 'Deactivate')
+                row.is_active === false
+                  ? h('button', {
+                    class: ['btn', 'btn-sm', 'btn-outline', 'activate-action'],
+                    type: 'button',
+                    onClick: () => emit('activate', row.id)
+                  }, 'Activate')
+                  : h('button', {
+                    class: ['btn', 'btn-sm', 'btn-outline', 'danger-action'],
+                    type: 'button',
+                    onClick: () => emit('deactivate', row.id)
+                  }, 'Deactivate')
               ])] : [])
             ]))
           : [h('tr', [h('td', { colspan: props.columns.length + (props.canManage ? 1 : 0), class: 'empty-state' }, props.emptyText)])]
@@ -505,7 +518,8 @@ const recordSummary = computed(() => {
   if (activeTab.value === 'grading') {
     return `${filteredGradingSchemes.value.length} schemes and ${filteredGradingOptions.value.length} grade options shown.`
   }
-  return `${filteredRows.value.length} of ${activeRows.value.length} records shown.`
+  const inactiveCount = activeRows.value.filter((row) => row.is_active === false).length
+  return `${filteredRows.value.length} of ${activeRows.value.length} records shown · ${inactiveCount} inactive.`
 })
 
 const hasActiveEdit = computed(() => {
@@ -559,6 +573,12 @@ function activeOnly(list) {
   return list.filter((row) => row.is_active !== false)
 }
 
+function applyStatusFilter(rows) {
+  if (recordStatusFilter.value === 'ACTIVE') return rows.filter((row) => row.is_active !== false)
+  if (recordStatusFilter.value === 'INACTIVE') return rows.filter((row) => row.is_active === false)
+  return rows
+}
+
 function countFor(key) {
   const counts = {
     lines: activeLines.value.length,
@@ -579,6 +599,7 @@ function formatCellValue(value) {
 }
 
 function filterRows(rows, columns) {
+  rows = applyStatusFilter(rows)
   const q = searchQuery.value.toLowerCase()
   if (!q) return rows
   return rows.filter((row) => columns.some((column) => {
@@ -717,6 +738,18 @@ async function deactivate(url, id) {
   }
 }
 
+async function activate(url, id) {
+  if (!window.confirm('Activate this record again? It will become selectable wherever active master data is used.')) return
+  clearAlerts()
+  try {
+    await api.put(`${url}/${id}/activate`)
+    await load()
+    ok('Record activated successfully.')
+  } catch (e) {
+    fail(e)
+  }
+}
+
 function clearCurrentForm() {
   const resets = {
     lines: resetLine,
@@ -752,6 +785,18 @@ function deactivateCurrent(id) {
     subareas: '/master/inspection-sub-areas'
   }
   deactivate(urls[activeTab.value], id)
+}
+
+function activateCurrent(id) {
+  const urls = {
+    lines: '/master/lines',
+    stations: '/master/stations',
+    contractors: '/master/contractors',
+    contracts: '/master/contracts',
+    attributes: '/master/inspection-attributes',
+    subareas: '/master/inspection-sub-areas'
+  }
+  activate(urls[activeTab.value], id)
 }
 
 function resetLine() { Object.assign(lineForm, { id: null, line_code: '', line_name: '' }) }
@@ -1228,6 +1273,12 @@ onMounted(load)
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.activate-action {
+  color: #166534;
+  border-color: #86efac;
+  background: #f0fdf4;
 }
 
 .danger-action {

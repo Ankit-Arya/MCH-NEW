@@ -131,7 +131,14 @@
           <button class="btn btn-muted" @click="load">Refresh</button>
         </div>
 
-        <input class="input" v-model.trim="userSearch" placeholder="Search name, username, emp no, role" />
+        <div class="user-filter-grid">
+          <input class="input" v-model.trim="userSearch" placeholder="Search name, username, emp no, role" />
+          <select class="input user-status-filter" v-model="userStatusFilter">
+            <option value="ALL">All users</option>
+            <option value="ACTIVE">Active only</option>
+            <option value="INACTIVE">Inactive only</option>
+          </select>
+        </div>
 
         <div class="table-wrap user-table-wrap">
           <table class="table compact-table">
@@ -378,6 +385,7 @@ const lineAccess = ref([])
 const reportingLinks = ref([])
 
 const userSearch = ref('')
+const userStatusFilter = ref('ALL')
 const editingUserId = ref(0)
 const savingUser = ref(false)
 const submittedUserForm = ref(false)
@@ -400,8 +408,11 @@ const selectedSupervisor = computed(() => userById.value[Number(selectedSupervis
 
 const filteredUsers = computed(() => {
   const q = userSearch.value.toLowerCase()
-  if (!q) return users.value
-  return users.value.filter((u) => [u.name, u.username, u.emp_number, u.email, u.mobile, u.role]
+  let source = users.value
+  if (userStatusFilter.value === 'ACTIVE') source = source.filter((u) => u.is_active)
+  if (userStatusFilter.value === 'INACTIVE') source = source.filter((u) => !u.is_active)
+  if (!q) return source
+  return source.filter((u) => [u.name, u.username, u.emp_number, u.email, u.mobile, u.role]
     .filter(Boolean)
     .some((value) => String(value).toLowerCase().includes(q)))
 })
@@ -1109,6 +1120,8 @@ onMounted(load)
 .error-text { color: #b91c1c; font-weight: 800; }
 .success-card { border-color: #bbf7d0; background: #f0fdf4; color: #166534; font-weight: 800; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.user-filter-grid { display: grid; grid-template-columns: minmax(0, 1fr) 170px; gap: 10px; }
+@media (max-width: 700px) { .user-filter-grid { grid-template-columns: 1fr; } }
 .required-star { color: #b91c1c; }
 .field-hint { margin: 5px 0 0; color: #64748b; font-size: 12px; line-height: 1.4; }
 .field-hint code { background: #e0f2fe; border-radius: 6px; padding: 1px 5px; color: #0f3f8f; }

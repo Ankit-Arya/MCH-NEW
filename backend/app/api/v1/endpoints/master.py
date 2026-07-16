@@ -135,6 +135,19 @@ def _deactivate(db: Session, user: User, model: Type[Any], obj_id: int, entity_t
     return {"message": f"{entity_type} deactivated", "id": obj_id}
 
 
+def _activate(db: Session, user: User, model: Type[Any], obj_id: int, entity_type: str) -> dict[str, Any]:
+    _require_manage(user)
+    obj = _get_or_404(db, model, obj_id)
+    if not hasattr(obj, "is_active"):
+        raise HTTPException(status_code=400, detail="This master data cannot be activated")
+    old_value = _as_dict(obj)
+    obj.is_active = True
+    db.flush()
+    audit_log(db, actor=user, action=f"MASTER_{entity_type}_ACTIVATED", entity_type=entity_type, entity_id=obj.id, old_value=old_value, new_value=_as_dict(obj))
+    _commit_or_409(db)
+    return {"message": f"{entity_type} activated", "id": obj_id}
+
+
 @router.get("/bootstrap")
 def bootstrap(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     scoped_station_ids = get_accessible_station_ids(db, user)
@@ -192,6 +205,11 @@ def deactivate_line(line_id: int, db: Session = Depends(get_db), user: User = De
     return _deactivate(db, user, Line, line_id, "LINE")
 
 
+@router.put("/lines/{line_id}/activate")
+def activate_line(line_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return _activate(db, user, Line, line_id, "LINE")
+
+
 @router.get("/contractors", response_model=list[ContractorOut])
 def list_contractors(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return db.query(Contractor).order_by(Contractor.contractor_name).all()
@@ -210,6 +228,11 @@ def update_contractor(contractor_id: int, payload: ContractorUpdate, db: Session
 @router.delete("/contractors/{contractor_id}")
 def deactivate_contractor(contractor_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return _deactivate(db, user, Contractor, contractor_id, "CONTRACTOR")
+
+
+@router.put("/contractors/{contractor_id}/activate")
+def activate_contractor(contractor_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return _activate(db, user, Contractor, contractor_id, "CONTRACTOR")
 
 
 @router.get("/stations", response_model=list[StationOut])
@@ -237,6 +260,11 @@ def update_station(station_id: int, payload: StationUpdate, db: Session = Depend
 @router.delete("/stations/{station_id}")
 def deactivate_station(station_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return _deactivate(db, user, Station, station_id, "STATION")
+
+
+@router.put("/stations/{station_id}/activate")
+def activate_station(station_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return _activate(db, user, Station, station_id, "STATION")
 
 
 @router.get("/contracts", response_model=list[ContractOut])
@@ -269,6 +297,11 @@ def update_contract(contract_id: int, payload: ContractUpdate, db: Session = Dep
 @router.delete("/contracts/{contract_id}")
 def deactivate_contract(contract_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return _deactivate(db, user, Contract, contract_id, "CONTRACT")
+
+
+@router.put("/contracts/{contract_id}/activate")
+def activate_contract(contract_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return _activate(db, user, Contract, contract_id, "CONTRACT")
 
 
 @router.get("/contracts/{contract_id}/stations", response_model=list[ContractStationOut])
@@ -329,6 +362,11 @@ def deactivate_inspection_attribute(attribute_id: int, db: Session = Depends(get
     return _deactivate(db, user, InspectionAttribute, attribute_id, "INSPECTION_ATTRIBUTE")
 
 
+@router.put("/inspection-attributes/{attribute_id}/activate")
+def activate_inspection_attribute(attribute_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return _activate(db, user, InspectionAttribute, attribute_id, "INSPECTION_ATTRIBUTE")
+
+
 @router.get("/inspection-attributes/{attribute_id}/sub-areas", response_model=list[InspectionSubAreaOut])
 def list_sub_areas_by_attribute(attribute_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     _get_or_404(db, InspectionAttribute, attribute_id)
@@ -358,6 +396,11 @@ def deactivate_inspection_sub_area(sub_area_id: int, db: Session = Depends(get_d
     return _deactivate(db, user, InspectionSubArea, sub_area_id, "INSPECTION_SUB_AREA")
 
 
+@router.put("/inspection-sub-areas/{sub_area_id}/activate")
+def activate_inspection_sub_area(sub_area_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return _activate(db, user, InspectionSubArea, sub_area_id, "INSPECTION_SUB_AREA")
+
+
 @router.get("/grading-schemes", response_model=list[GradingSchemeOut])
 def list_grading_schemes(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return db.query(GradingScheme).order_by(GradingScheme.name).all()
@@ -376,6 +419,11 @@ def update_grading_scheme(scheme_id: int, payload: GradingSchemeUpdate, db: Sess
 @router.delete("/grading-schemes/{scheme_id}")
 def deactivate_grading_scheme(scheme_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return _deactivate(db, user, GradingScheme, scheme_id, "GRADING_SCHEME")
+
+
+@router.put("/grading-schemes/{scheme_id}/activate")
+def activate_grading_scheme(scheme_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return _activate(db, user, GradingScheme, scheme_id, "GRADING_SCHEME")
 
 
 @router.get("/grading-options", response_model=list[GradingOptionOut])
