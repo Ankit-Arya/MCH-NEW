@@ -52,6 +52,37 @@ def _iso(value):
     return value.isoformat() if value else None
 
 
+
+def _inspection_device_info(inspection: Inspection) -> dict:
+    return inspection.device_info if isinstance(inspection.device_info, dict) else {}
+
+
+def _is_emergency_inspection(inspection: Inspection) -> bool:
+    return bool(_inspection_device_info(inspection).get("emergency_inspection"))
+
+
+def _emergency_reason(inspection: Inspection) -> str | None:
+    info = _inspection_device_info(inspection)
+    reason = info.get("emergency_reason") or info.get("reason")
+    if reason:
+        return str(reason).strip()
+    if _is_emergency_inspection(inspection) and inspection.remarks:
+        remarks = str(inspection.remarks).strip()
+        if remarks.lower().startswith("emergency inspection:"):
+            return remarks.split(":", 1)[1].strip() or None
+    return None
+
+
+def _emergency_payload(inspection: Inspection) -> dict:
+    info = _inspection_device_info(inspection)
+    return {
+        "is_emergency": _is_emergency_inspection(inspection),
+        "emergency_reason": _emergency_reason(inspection),
+        "emergency_started_by_user_id": info.get("emergency_started_by_user_id"),
+        "normal_station_assignment_bypassed": bool(info.get("normal_station_assignment_bypassed")),
+    }
+
+
 def _review_payload(review: InspectionReview | None) -> dict | None:
     if not review:
         return None
@@ -101,6 +132,13 @@ def _workflow_tracker(db: Session, inspection: Inspection) -> dict:
 
     current_status = inspection.status.value if inspection.status else None
     submitter_name = inspection.submitter.name if inspection.submitter else None
+    emergency = _emergency_payload(inspection)
+    submitted_note = "Submitted for hierarchy review" if inspection.submitted_at else "Not submitted yet"
+    if emergency["is_emergency"]:
+        submitted_note = (
+            f"EMERGENCY INSPECTION. Reason: {emergency['emergency_reason'] or 'Not provided'}. "
+            + submitted_note
+        )
 
     stages = [
         _stage(
@@ -117,7 +155,7 @@ def _workflow_tracker(db: Session, inspection: Inspection) -> dict:
             "done" if inspection.submitted_at else "pending",
             inspection.submitted_at,
             submitter_name,
-            note="Submitted for hierarchy review" if inspection.submitted_at else "Not submitted yet",
+            note=submitted_note,
         ),
         _stage(
             "line_manager",
@@ -160,6 +198,7 @@ def _workflow_tracker(db: Session, inspection: Inspection) -> dict:
         "total_count": len(stages),
         "stages": stages,
         "reviews": [_review_payload(review) for review in reviews],
+        "emergency": emergency,
     }
 
 
@@ -190,6 +229,9 @@ def _review_row(db: Session, i: Inspection) -> dict:
         "media_count": media_count,
         "created_at": i.created_at.isoformat() if getattr(i, "created_at", None) else None,
         "submitted_at": i.submitted_at.isoformat() if i.submitted_at else None,
+        "is_emergency": _is_emergency_inspection(i),
+        "emergency_reason": _emergency_reason(i),
+        "emergency": _emergency_payload(i),
         "workflow_tracker": _workflow_tracker(db, i),
     }
 

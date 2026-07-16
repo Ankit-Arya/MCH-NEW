@@ -201,6 +201,52 @@ def _p(value, style) -> Paragraph:
     return Paragraph("<br/>".join(_safe_text(line) for line in lines), style)
 
 
+
+def _inspection_device_info(inspection: Inspection) -> dict:
+    return inspection.device_info if isinstance(inspection.device_info, dict) else {}
+
+
+def _is_emergency_inspection(inspection: Inspection) -> bool:
+    return bool(_inspection_device_info(inspection).get("emergency_inspection"))
+
+
+def _emergency_reason(inspection: Inspection) -> str | None:
+    info = _inspection_device_info(inspection)
+    reason = info.get("emergency_reason") or info.get("reason")
+    if reason:
+        return str(reason).strip()
+    if _is_emergency_inspection(inspection) and inspection.remarks:
+        remarks = str(inspection.remarks).strip()
+        if remarks.lower().startswith("emergency inspection:"):
+            return remarks.split(":", 1)[1].strip() or None
+    return None
+
+
+def _build_emergency_banner(inspection: Inspection, styles) -> list:
+    if not _is_emergency_inspection(inspection):
+        return []
+
+    info = _inspection_device_info(inspection)
+    reason = _emergency_reason(inspection) or "Not provided"
+    bypass_text = "Yes" if info.get("normal_station_assignment_bypassed") else "No / assigned station"
+    rows = [[
+        Paragraph("EMERGENCY INSPECTION", styles["TableHeader"]),
+        Paragraph(f"<b>Reason:</b> {_safe_text(reason)}<br/><b>Station assignment bypassed:</b> {_safe_text(bypass_text)}", styles["MetaValue"]),
+    ]]
+    table = Table(rows, colWidths=[150, 385])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff7ed")),
+        ("BOX", (0, 0), (-1, -1), 0.9, colors.HexColor("#f97316")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.45, colors.HexColor("#fed7aa")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    return [Spacer(1, 10), table]
+
+
 def _evidence_signature(media_id: int, expires_at: int) -> str:
     message = f"{media_id}:{expires_at}".encode("utf-8")
     secret = settings.SECRET_KEY.encode("utf-8")
@@ -461,6 +507,13 @@ def _row(i: Inspection) -> dict:
         "score": _inspection_score(i),
         "entry_count": len(entries),
         "media_count": len(media),
+        "is_emergency": _is_emergency_inspection(i),
+        "emergency_reason": _emergency_reason(i),
+        "emergency": {
+            "is_emergency": _is_emergency_inspection(i),
+            "emergency_reason": _emergency_reason(i),
+            "normal_station_assignment_bypassed": bool(_inspection_device_info(i).get("normal_station_assignment_bypassed")),
+        },
     }
 
 
@@ -840,6 +893,7 @@ def inspection_pdf(inspection_id: int, request: Request, db: Session = Depends(g
     story.append(Spacer(1, 14))
     story.append(Paragraph("Inspection Metadata", styles["SectionTitle"]))
     story.append(_build_metadata_table(inspection, styles))
+    story.extend(_build_emergency_banner(inspection, styles))
     story.append(Spacer(1, 14))
     if _inspection_kpi_category(db, inspection.id) == KPI_CHEMICALS:
         story.extend(_build_chemical_findings_table(db, inspection, styles))
@@ -996,7 +1050,7 @@ def inspections_pdf(
                     _p(i.inspection_date, styles["TableCellCenter"]),
                     _p(i.station.station_name if i.station else i.station_id, styles["TableCell"]),
                     _p(i.submitter.name if i.submitter else i.submitted_by, styles["TableCell"]),
-                    _p(_status_label(i.status.value), styles["TableCellCenter"]),
+                    _p(("EMERGENCY\n" if _is_emergency_inspection(i) else "") + _status_label(i.status.value), styles["TableCellCenter"]),
                     _p(e.entry_no, styles["TableCellCenter"]),
                     _p(e.attribute.name if e.attribute else e.attribute_id, styles["TableCell"]),
                     _p(e.sub_area.name if e.sub_area else e.sub_area_id, styles["TableCell"]),

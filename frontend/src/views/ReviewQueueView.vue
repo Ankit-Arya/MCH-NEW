@@ -43,14 +43,23 @@
           </thead>
           <tbody>
             <tr v-for="i in rows" :key="i.id">
-              <td><strong>{{ i.inspection_no }}</strong><br /><span class="muted small-text">{{ shortType(i.inspection_type) }}</span></td>
+              <td>
+                <strong>{{ i.inspection_no }}</strong><br />
+                <span class="muted small-text">{{ shortType(i.inspection_type) }}</span>
+                <span v-if="isEmergency(i)" class="badge red emergency-mini-badge">Emergency</span>
+              </td>
               <td>{{ formatDate(i.inspection_date) }}</td>
-              <td>{{ i.station_name || i.station_id }}<br /><span class="muted small-text">{{ i.contract_code || '-' }}</span></td>
+              <td>
+                {{ i.station_name || i.station_id }}<br />
+                <span class="muted small-text">{{ i.contract_code || '-' }}</span>
+                <p v-if="isEmergency(i)" class="emergency-reason-line">Reason: {{ emergencyReason(i) }}</p>
+              </td>
               <td>{{ i.submitted_by_name || '-' }}</td>
               <td><strong>{{ displayPercent(i.score) }}</strong></td>
               <td>
                 <button class="status-tracker-button" type="button" @click="openTracker(i)">
                   <span class="badge" :class="statusClass(i.status)">{{ statusLabel(i.status) }}</span>
+            <span v-if="isEmergency(i)" class="badge red">Emergency</span>
                   <span class="tracker-button-sub">{{ trackerButtonText(i) }}</span>
                 </button>
               </td>
@@ -80,6 +89,9 @@
             <span>Inspector</span><b>{{ i.submitted_by_name || '-' }}</b>
             <span>Type</span><b>{{ shortType(i.inspection_type) }}</b>
             <span>Score</span><b>{{ displayPercent(i.score) }}</b>
+            <template v-if="isEmergency(i)">
+              <span>Emergency reason</span><b class="emergency-text">{{ emergencyReason(i) }}</b>
+            </template>
           </div>
           <div class="mobile-action-row">
             <button class="status-tracker-button mobile-status-button" type="button" @click="openTracker(i)">
@@ -117,6 +129,11 @@
           <button class="btn btn-outline" type="button" @click="closeTracker">Close</button>
         </div>
 
+        <div v-if="isEmergency(selectedTrackerRow)" class="emergency-alert">
+          <strong>Emergency Inspection</strong>
+          <span>Reason: {{ emergencyReason(selectedTrackerRow) }}</span>
+        </div>
+
         <div class="tracker-status-summary">
           <span class="label">Current status</span>
           <span class="badge" :class="statusClass(selectedTrackerRow.status)">{{ statusLabel(selectedTrackerRow.status) }}</span>
@@ -152,6 +169,12 @@
         <div class="review-rule-box">
           <strong>{{ reviewRuleTitle(reviewModal.item) }}</strong>
           <span>{{ reviewRuleText(reviewModal.item) }}</span>
+        </div>
+
+        <div v-if="isEmergency(reviewModal.item)" class="emergency-alert review-emergency-alert">
+          <strong>Emergency Inspection</strong>
+          <span>Reason: {{ emergencyReason(reviewModal.item) }}</span>
+          <small>Keep this context in your review remarks before forwarding / final decision.</small>
         </div>
 
         <div class="review-form-grid">
@@ -273,6 +296,12 @@ function formatDateTime(value) {
 function displayPercent(value) {
   if (value === null || value === undefined || value === '') return '-'
   return `${Number(value).toFixed(2).replace(/\.00$/, '')}%`
+}
+function isEmergency(item) {
+  return Boolean(item?.is_emergency || item?.emergency?.is_emergency)
+}
+function emergencyReason(item) {
+  return item?.emergency_reason || item?.emergency?.emergency_reason || 'Reason not provided'
 }
 function actionName(action) {
   const labels = {
@@ -458,6 +487,13 @@ onBeforeUnmount(cleanupPdfUrl)
 .review-preview-box strong { color: #0f172a; }
 .review-modal-actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; padding-top: 4px; }
 .badge.red { background: #fee2e2; color: #991b1b; }
+.emergency-mini-badge { display: inline-flex; margin-top: 6px; width: fit-content; }
+.emergency-reason-line { margin: 6px 0 0; color: #991b1b; font-size: 11px; font-weight: 900; line-height: 1.35; }
+.emergency-alert { display: grid; gap: 4px; margin: 14px 0; border: 1px solid #fed7aa; background: #fff7ed; color: #9a3412; border-radius: 16px; padding: 12px 14px; line-height: 1.4; }
+.emergency-alert strong { color: #9a3412; }
+.emergency-alert small { color: #7c2d12; font-weight: 800; }
+.emergency-text { color: #991b1b !important; }
+
 @media (max-width: 760px) {
   .desktop-table { display: none; }
   .mobile-list { display: grid; gap: 14px; }
