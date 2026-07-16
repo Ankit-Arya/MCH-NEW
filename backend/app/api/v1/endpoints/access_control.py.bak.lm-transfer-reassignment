@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -27,24 +26,6 @@ router = APIRouter()
 REPORTING_RELATION = "REPORTING"
 SM_STATION_OWNER_ROLES = {RoleCode.STATION_MANAGER}
 STATION_ONLY_ROLES = {RoleCode.STATION_MANAGER, RoleCode.EIT_MEMBER}
-LINE_MANAGER_ROLES = {RoleCode.AM_MGR_LINE, RoleCode.AM_MGR_HK}
-DGM_ROLES = {RoleCode.DGM_LINE, RoleCode.DGM_HK}
-FIELD_INSPECTOR_ROLES = {RoleCode.STATION_MANAGER, RoleCode.EIT_MEMBER}
-
-
-class LineManagerTransferUpdate(BaseModel):
-    """Transfer one LM to a new DGM and hand over that LM's SM/EIT children.
-
-    This is different from normal reporting-link editing. A person transfer should move
-    only the LM. The SM/EIT team that previously reported to that LM is reassigned to
-    a replacement LM under the old DGM.
-    """
-
-    transferred_lm_user_id: int
-    new_dgm_user_id: int
-    replacement_lm_user_id: int
-    relation_type: str = REPORTING_RELATION
-
 
 # Operational hierarchy is intentionally single-parent per user:
 # GM/Ops -> DGM(s) -> LM(s) -> SM/EIT(s). Higher users can have many children,
@@ -235,198 +216,6 @@ def _deactivate_other_active_parents(
     return len(rows)
 
 
-
-# LM TRANSFER WITH REPLACEMENT PATCH
-def _active_reporting_parent_rows(db: Session, subordinate_user_id: int, relation_type: str = REPORTING_RELATION):
-    return (
-        db.query(UserSupervisorAccess)
-        .options(joinedload(UserSupervisorAccess.supervisor).joinedload(User.role))
-        .filter(
-            UserSupervisorAccess.subordinate_user_id == subordinate_user_id,
-            UserSupervisorAccess.relation_type == relation_type,
-            UserSupervisorAccess.is_active.is_(True),
-        )
-        .all()
-    )
-
-
-def _active_reporting_child_rows(db: Session, supervisor_user_id: int, relation_type: str = REPORTING_RELATION):
-    return (
-        db.query(UserSupervisorAccess)
-        .options(joinedload(UserSupervisorAccess.subordinate).joinedload(User.role))
-        .filter(
-            UserSupervisorAccess.supervisor_user_id == supervisor_user_id,
-            UserSupervisorAccess.relation_type == relation_type,
-            UserSupervisorAccess.is_active.is_(True),
-        )
-        .all()
-    )
-
-
-def _get_or_create_reporting_link(
-    db: Session,
-    *,
-    supervisor_user_id: int,
-    subordinate_user_id: int,
-    relation_type: str,
-) -> UserSupervisorAccess:
-    row = (
-        db.query(UserSupervisorAccess)
-        .filter(
-            UserSupervisorAccess.supervisor_user_id == supervisor_user_id,
-            UserSupervisorAccess.subordinate_user_id == subordinate_user_id,
-            UserSupervisorAccess.relation_type == relation_type,
-        )
-        .first()
-    )
-    if row:
-        row.is_active = True
-        return row
-
-    row = UserSupervisorAccess(
-        supervisor_user_id=supervisor_user_id,
-        subordinate_user_id=subordinate_user_id,
-        relation_type=relation_type,
-        is_active=True,
-    )
-    db.add(row)
-    db.flush()
-    return row
-
-
-def _transfer_line_manager_with_replacement(
-    db: Session,
-    *,
-    payload: LineManagerTransferUpdate,
-    actor: User,
-) -> dict[str, Any]:
-    relation_type = payload.relation_type or REPORTING_RELATION
-    transferred_lm = _ensure_user(db, int(payload.transferred_lm_user_id))
-    new_dgm = _ensure_user(db, int(payload.new_dgm_user_id))
-    replacement_lm = _ensure_user(db, int(payload.replacement_lm_user_id))
-
-    if _role_code(transferred_lm) not in LINE_MANAGER_ROLES:
-        raise HTTPException(status_code=422, detail="Transferred user must be a Line Manager / HK Manager")
-    if _role_code(new_dgm) not in DGM_ROLES:
-        raise HTTPException(status_code=422, detail="New supervisor must be a DGM Line / DGM HK")
-    if _role_code(replacement_lm) not in LINE_MANAGER_ROLES:
-        raise HTTPException(status_code=422, detail="Replacement user must be a Line Manager / HK Manager")
-    if transferred_lm.id == replacement_lm.id:
-        raise HTTPException(status_code=422, detail="Replacement LM cannot be the same person being transferred")
-    if transferred_lm.id == new_dgm.id or replacement_lm.id == new_dgm.id:
-        raise HTTPException(status_code=422, detail="Invalid transfer selection")
-
-    parent_rows = _active_reporting_parent_rows(db, transferred_lm.id, relation_type)
-    old_dgm_rows = [row for row in parent_rows if _role_code(row.supervisor) in DGM_ROLES]
-    if len(old_dgm_rows) != 1:
-        raise HTTPException(
-            status_code=422,
-            detail="Selected LM must currently have exactly one active DGM supervisor before transfer.",
-        )
-
-    old_dgm = old_dgm_rows[0].supervisor
-    if old_dgm.id == new_dgm.id:
-        raise HTTPException(status_code=422, detail="Selected LM is already under this DGM")
-
-    replacement_parent_rows = _active_reporting_parent_rows(db, replacement_lm.id, relation_type)
-    replacement_under_old_dgm = any(row.supervisor_user_id == old_dgm.id for row in replacement_parent_rows)
-    if not replacement_under_old_dgm:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "Replacement LM must be an active LM under the old DGM so the previous station team "
-                "stays in the same DGM hierarchy."
-            ),
-        )
-
-    # 1. Move only the LM under the new DGM.
-    for row in parent_rows:
-        row.is_active = False
-    _ensure_no_reporting_cycle(db, new_dgm.id, transferred_lm.id)
-    _get_or_create_reporting_link(
-        db,
-        supervisor_user_id=new_dgm.id,
-        subordinate_user_id=transferred_lm.id,
-        relation_type=relation_type,
-    )
-
-    # 2. Hand over only SM/EIT children from the transferred LM to replacement LM.
-    child_rows = _active_reporting_child_rows(db, transferred_lm.id, relation_type)
-    field_child_rows = [
-        row for row in child_rows
-        if row.subordinate is not None and _role_code(row.subordinate) in FIELD_INSPECTOR_ROLES
-    ]
-    moved_children = []
-    for row in field_child_rows:
-        subordinate_id = row.subordinate_user_id
-        subordinate = row.subordinate
-        _ensure_no_reporting_cycle(db, replacement_lm.id, subordinate_id)
-
-        # Disable the old LM -> SM/EIT link and any other active parent link to keep single-parent rule.
-        for parent_row in _active_reporting_parent_rows(db, subordinate_id, relation_type):
-            if parent_row.supervisor_user_id != replacement_lm.id:
-                parent_row.is_active = False
-
-        _get_or_create_reporting_link(
-            db,
-            supervisor_user_id=replacement_lm.id,
-            subordinate_user_id=subordinate_id,
-            relation_type=relation_type,
-        )
-        moved_children.append({
-            "id": subordinate_id,
-            "name": subordinate.name if subordinate else None,
-            "role": subordinate.role.code.value if subordinate and subordinate.role else None,
-        })
-
-    untouched_children = [
-        {
-            "id": row.subordinate_user_id,
-            "name": row.subordinate.name if row.subordinate else None,
-            "role": row.subordinate.role.code.value if row.subordinate and row.subordinate.role else None,
-        }
-        for row in child_rows
-        if row.subordinate is not None and _role_code(row.subordinate) not in FIELD_INSPECTOR_ROLES
-    ]
-
-    audit_log(
-        db,
-        actor=actor,
-        action="ACCESS_LM_TRANSFERRED_WITH_REPLACEMENT",
-        entity_type="User",
-        entity_id=transferred_lm.id,
-        new_value={
-            "transferred_lm_user_id": transferred_lm.id,
-            "transferred_lm_name": transferred_lm.name,
-            "old_dgm_user_id": old_dgm.id,
-            "old_dgm_name": old_dgm.name,
-            "new_dgm_user_id": new_dgm.id,
-            "new_dgm_name": new_dgm.name,
-            "replacement_lm_user_id": replacement_lm.id,
-            "replacement_lm_name": replacement_lm.name,
-            "moved_sm_eit_count": len(moved_children),
-            "moved_sm_eit_users": moved_children,
-            "untouched_non_field_children": untouched_children,
-            "relation_type": relation_type,
-            "rule": "Transfer person only; reassign previous SM/EIT team to replacement LM",
-        },
-    )
-
-    return {
-        "message": (
-            f"{transferred_lm.name} transferred from {old_dgm.name} to {new_dgm.name}. "
-            f"{len(moved_children)} SM/EIT user(s) reassigned to {replacement_lm.name}."
-        ),
-        "transferred_lm_user_id": transferred_lm.id,
-        "old_dgm_user_id": old_dgm.id,
-        "new_dgm_user_id": new_dgm.id,
-        "replacement_lm_user_id": replacement_lm.id,
-        "moved_sm_eit_count": len(moved_children),
-        "moved_sm_eit_users": moved_children,
-        "untouched_non_field_children": untouched_children,
-    }
-
-
 def _replace_station_access(db: Session, payload: StationAccessUpdate, actor: User) -> dict[str, Any]:
     target = _ensure_user(db, payload.user_id)
     station_ids = set(payload.station_ids or [])
@@ -574,34 +363,6 @@ def set_line_access(payload: LineAccessUpdate, db: Session = Depends(get_db), us
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Duplicate line mapping") from exc
-    return result
-
-
-@router.post("/transfer-line-manager")
-def transfer_line_manager(
-    payload: LineManagerTransferUpdate,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    """Transfer one LM to another DGM without dragging SM/EIT children with the person.
-
-    Flow:
-    - old DGM -> transferred LM is disabled
-    - new DGM -> transferred LM is enabled
-    - transferred LM -> SM/EIT links are disabled
-    - replacement LM -> those SM/EIT links are enabled
-    """
-
-    _require_manage(user)
-    result = _transfer_line_manager_with_replacement(db, payload=payload, actor=user)
-    try:
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Duplicate reporting mapping during LM transfer. Please refresh hierarchy and try again.",
-        ) from exc
     return result
 
 
