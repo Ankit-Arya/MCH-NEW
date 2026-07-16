@@ -38,6 +38,10 @@
         </button>
       </div>
 
+      <div v-if="success" class="state-box success-box">
+        <strong>Done</strong>
+        <span>{{ success }}</span>
+      </div>
       <div v-if="loading" class="state-box">Loading action-required inspections...</div>
       <div v-else-if="error" class="state-box error-box">
         <strong>Unable to load action-required records</strong>
@@ -82,6 +86,15 @@
               {{ item.status === 'RETURNED_FOR_CLARIFICATION' ? 'Correct & Resubmit' : 'Continue Draft' }}
             </RouterLink>
             <button class="btn btn-outline" type="button" @click="viewTrail(item)">View Trail</button>
+            <button
+              v-if="item.status === 'DRAFT' && item.can_delete_draft !== false"
+              class="btn btn-outline danger-button"
+              type="button"
+              :disabled="deletingId === item.id"
+              @click="deleteDraft(item)"
+            >
+              {{ deletingId === item.id ? 'Deleting...' : 'Delete Draft' }}
+            </button>
           </div>
         </article>
       </div>
@@ -123,7 +136,9 @@ import { api } from '../services/api'
 const rows = ref([])
 const loading = ref(false)
 const error = ref('')
+const success = ref('')
 const selectedItem = ref(null)
+const deletingId = ref(null)
 const counts = reactive({ draft: 0, returned: 0 })
 const pagination = reactive({ page: 1, size: 20, total: 0, pages: 1, has_next: false, has_prev: false, from_record: 0, to_record: 0 })
 
@@ -166,6 +181,28 @@ async function loadPage() {
 async function goPrev() { if (pagination.has_prev) { pagination.page -= 1; await loadPage() } }
 async function goNext() { if (pagination.has_next) { pagination.page += 1; await loadPage() } }
 function viewTrail(item) { selectedItem.value = item }
+
+async function deleteDraft(item) {
+  if (!item || item.status !== 'DRAFT') return
+  const ok = window.confirm(
+    `Delete draft inspection ${item.inspection_no}?\n\nThis will permanently remove the draft, its entries and uploaded evidence references. Submitted or returned inspections cannot be deleted.`
+  )
+  if (!ok) return
+
+  deletingId.value = item.id
+  error.value = ''
+  success.value = ''
+  try {
+    await api.delete(`/inspections/${item.id}/draft`)
+    success.value = `Draft inspection ${item.inspection_no} deleted successfully.`
+    if (rows.value.length === 1 && pagination.page > 1) pagination.page -= 1
+    await loadPage()
+  } catch (e) {
+    error.value = apiErrorText(e, 'Unable to delete draft inspection')
+  } finally {
+    deletingId.value = null
+  }
+}
 
 function formatDate(value) {
   if (!value) return '-'
@@ -224,6 +261,7 @@ onMounted(loadPage)
 .small-text { font-size: .9rem; margin-top: 4px; }
 .state-box, .empty-state { border: 1px dashed #cbd5e1; border-radius: 20px; padding: 22px; background: #f8fafc; color: #475569; }
 .error-box { display: grid; gap: 6px; color: #991b1b; background: #fff1f2; border-color: #fecaca; }
+.success-box { display: grid; gap: 6px; color: #166534; background: #f0fdf4; border-color: #bbf7d0; }
 .empty-state { display: grid; gap: 10px; justify-items: start; }
 .empty-state h3, .empty-state p { margin: 0; }
 .action-list { display: grid; gap: 14px; }
@@ -243,6 +281,8 @@ onMounted(loadPage)
 .reason-box small { color: #64748b; font-weight: 800; }
 .action-buttons { display: flex; flex-direction: column; gap: 10px; justify-content: center; min-width: 178px; }
 .badge.red { background: #fee2e2; color: #991b1b; }
+.danger-button { border-color: #fecaca; color: #991b1b; background: #fff7f7; }
+.danger-button:hover:not(:disabled) { background: #fee2e2; }
 .pagination-bar { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; padding-top: 18px; }
 .page-indicator { font-weight: 900; color: #17345c; padding: 0 8px; }
 .trail-modal-backdrop { position: fixed; inset: 0; z-index: 90; background: rgba(15,23,42,.42); display: grid; place-items: center; padding: 18px; }

@@ -17,6 +17,7 @@ from app.models.all_models import (
     InspectionStatus,
     InspectionSubArea,
     InspectionType,
+    InspectionWorkflowHistory,
     MediaType,
     RoleCode,
     Station,
@@ -45,7 +46,7 @@ from app.services.inspection_service import (
 )
 from app.services.media_service import EvidenceProcessingError, build_object_path, prepare_evidence_media, sha256_bytes, upload_bytes
 from app.services.audit_service import audit_log
-from app.models.kpi_chemical import InspectionKpiContext, KPI_6_CLEANLINESS, KPI_CHEMICALS
+from app.models.kpi_chemical import ChemicalInspectionEntry, InspectionKpiContext, KPI_6_CLEANLINESS, KPI_CHEMICALS
 
 router = APIRouter()
 
@@ -173,6 +174,7 @@ def _action_required_row(db: Session, inspection: Inspection) -> dict:
             "reason": reason,
             "priority": priority,
             "can_continue": inspection.status in ACTION_REQUIRED_STATUSES,
+            "can_delete_draft": inspection.status == InspectionStatus.DRAFT,
             "latest_review": latest_review,
             "latest_remarks": latest_review.get("comments") if latest_review else inspection.remarks,
             "latest_actor": latest_review.get("reviewer_name") if latest_review else None,
@@ -528,6 +530,71 @@ def start_inspection(payload: InspectionStartIn, db: Session = Depends(get_db), 
     db.commit()
     db.refresh(inspection)
     return _attach_kpi_category(db, inspection)
+
+
+
+
+@router.delete("/{inspection_id}/draft")
+def delete_draft_inspection(inspection_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Delete an unsubmitted draft inspection owned by the logged-in field user.
+
+    This is intentionally narrow:
+    - only DRAFT inspections can be deleted;
+    - only the original submitter can delete it;
+    - only field inspector roles get this self-service delete option.
+
+    Submitted / returned inspections remain part of the workflow trail and cannot be
+    deleted from this endpoint.
+    """
+
+    inspection = db.get(Inspection, inspection_id)
+    if not inspection:
+        raise HTTPException(status_code=404, detail="Inspection not found")
+
+    if inspection.status != InspectionStatus.DRAFT:
+        raise HTTPException(status_code=400, detail="Only draft inspections can be deleted. Submitted or returned inspections cannot be deleted.")
+
+    if inspection.submitted_by != user.id:
+        raise HTTPException(status_code=403, detail="You can delete only your own draft inspection.")
+
+    role_code = user.role.code if user and user.role else None
+    if role_code not in {RoleCode.STATION_MANAGER, RoleCode.EIT_MEMBER}:
+        raise HTTPException(status_code=403, detail="Only SM/EIT users can delete their own draft inspections from Action Required.")
+
+    deleted_summary = {
+        "inspection_id": inspection.id,
+        "inspection_no": inspection.inspection_no,
+        "station_id": inspection.station_id,
+        "contract_id": inspection.contract_id,
+        "submitted_by": inspection.submitted_by,
+        "status": inspection.status.value if getattr(inspection.status, "value", None) else str(inspection.status),
+    }
+
+    audit_log(
+        db,
+        actor=user,
+        action="DRAFT_INSPECTION_DELETED_BY_SUBMITTER",
+        entity_type="Inspection",
+        entity_id=inspection.id,
+        old_value=deleted_summary,
+    )
+
+    # Explicitly remove child rows first so databases without ON DELETE CASCADE do not
+    # block deletion. Evidence objects already uploaded to MinIO are not reused by the
+    # application after these database rows are removed.
+    db.query(InspectionMedia).filter(InspectionMedia.inspection_id == inspection.id).delete(synchronize_session=False)
+    db.query(InspectionEntry).filter(InspectionEntry.inspection_id == inspection.id).delete(synchronize_session=False)
+    db.query(InspectionAttributeScore).filter(InspectionAttributeScore.inspection_id == inspection.id).delete(synchronize_session=False)
+    db.query(InspectionSubAreaObservation).filter(InspectionSubAreaObservation.inspection_id == inspection.id).delete(synchronize_session=False)
+    db.query(InspectionReview).filter(InspectionReview.inspection_id == inspection.id).delete(synchronize_session=False)
+    db.query(InspectionWorkflowHistory).filter(InspectionWorkflowHistory.inspection_id == inspection.id).delete(synchronize_session=False)
+    db.query(ChemicalInspectionEntry).filter(ChemicalInspectionEntry.inspection_id == inspection.id).delete(synchronize_session=False)
+    db.query(InspectionKpiContext).filter(InspectionKpiContext.inspection_id == inspection.id).delete(synchronize_session=False)
+
+    db.delete(inspection)
+    db.commit()
+
+    return {"message": "Draft inspection deleted successfully", **deleted_summary}
 
 
 @router.get("/{inspection_id}", response_model=InspectionOut)
