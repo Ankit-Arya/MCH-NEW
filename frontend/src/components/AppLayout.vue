@@ -375,7 +375,14 @@ function openActionRequiredNotice() { if (hasActionRequiredNotice.value) actionR
 function dismissActionRequiredNotice() { actionRequiredNotice.open = false; markNoticeChecked(actionRequiredNotice.checkedKey) }
 async function goToReviews() { dismissPendingReviewNotice(); closeMobileMenu(); await router.push('/reviews') }
 async function goToActionRequired() { dismissActionRequiredNotice(); closeMobileMenu(); await router.push('/inspections/action-required') }
-async function goToWeeklyCompliance() { dismissActionRequiredNotice(); closeMobileMenu(); await router.push('/inspections/weekly-compliance') }
+async function goToWeeklyCompliance() {
+  // This action can be invoked from either the action-required popup or the pending-review popup.
+  // Close both notices before navigation so no modal remains over the destination page.
+  dismissActionRequiredNotice()
+  dismissPendingReviewNotice()
+  closeMobileMenu()
+  await router.push('/inspections/weekly-compliance')
+}
 async function handleActionRequiredPrimary() {
   if (actionRequiredNotice.weeklyApplies) return goToWeeklyCompliance()
   if (actionRequiredNotice.count > 0) return goToActionRequired()
