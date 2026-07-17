@@ -107,8 +107,8 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from "vue";
-import { useRoute } from "vue-router";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { onBeforeRouteLeave, useRoute } from "vue-router";
 import AppLayout from "../components/AppLayout.vue";
 import EntryCaptureForm from "../components/EntryCaptureForm.vue";
 import EntryMetadataPreview from "../components/EntryMetadataPreview.vue";
@@ -176,6 +176,31 @@ function nowIso() {
 function reloadPage() {
   window.location.reload();
 }
+
+const LEAVE_INSPECTION_WARNING =
+  "Your inspection is still in progress. If you leave this page, unsaved progress will be lost. Continue?";
+
+const shouldWarnBeforeLeaving = computed(() => {
+  if (!inspection.value) return false;
+  if (saving.value || submitting.value) return true;
+  return canEdit.value;
+});
+
+function confirmLeaveInspection() {
+  if (!shouldWarnBeforeLeaving.value) return true;
+  return window.confirm(LEAVE_INSPECTION_WARNING);
+}
+
+function handleBeforeUnload(event) {
+  if (!shouldWarnBeforeLeaving.value) return;
+  event.preventDefault();
+  event.returnValue = "";
+}
+
+onBeforeRouteLeave((_to, _from, next) => {
+  if (confirmLeaveInspection()) next();
+  else next(false);
+});
 
 function getPhotoFiles() {
   if (Array.isArray(media.value?.photos)) return media.value.photos;
@@ -397,6 +422,7 @@ async function submitInspection() {
 }
 
 onMounted(async () => {
+  window.addEventListener("beforeunload", handleBeforeUnload);
   loading.value = true;
   loadError.value = "";
   try {
@@ -421,6 +447,10 @@ onMounted(async () => {
   } finally {
     loading.value = false;
   }
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("beforeunload", handleBeforeUnload);
 });
 </script>
 
