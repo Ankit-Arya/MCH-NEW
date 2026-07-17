@@ -58,7 +58,7 @@
 
       <div class="action-row section-gap">
         <button class="btn btn-primary" @click="calculate" :disabled="calculating || !selectedCycleId || !selectedContractId">
-          {{ calculating ? 'Calculating...' : 'Calculate selected contract' }}
+          {{ calculating ? 'Checking GM approvals...' : 'Calculate after GM approval' }}
         </button>
         <button class="btn btn-secondary" @click="viewEvidenceRegister" :disabled="pdfLoading || !selectedCycleId">
           View monthly evidence report
@@ -71,8 +71,8 @@
 
       <div class="plain-help section-gap">
         <strong>How to use:</strong>
-        Select the billing month and contract name, calculate KPI-6, then check the station drill-down.
-        Stations with no SM/EIT inspection or low score explain why a penalty was generated.
+        Select the billing month and contract name, calculate KPI-6 after GM/Ops final approval, then check the station drill-down.
+        Only GM/Ops-approved inspections contribute to monthly KPI score and penalty; pending inspections block calculation.
       </div>
     </section>
 
@@ -120,8 +120,8 @@
       <div class="card guidance-card">
         <h2>Decision logic</h2>
         <p>
-          KPI-6 compares the contract average against the configured contract threshold.
-          Penalty amount is calculated from monthly bill value and contract penalty percentage.
+          KPI-6 compares the contract average against the configured contract threshold after GM/Ops final approval.
+          Penalty amount is calculated from monthly bill value and contract penalty percentage only for approved monthly inspection data.
         </p>
       </div>
     </section>

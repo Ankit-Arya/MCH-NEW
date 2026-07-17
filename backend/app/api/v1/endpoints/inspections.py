@@ -11,11 +11,13 @@ from app.models.all_models import (
     GradingOption,
     Inspection,
     InspectionAttribute,
+    InspectionAttributeScore,
     InspectionEntry,
     InspectionMedia,
     InspectionReview,
     InspectionStatus,
     InspectionSubArea,
+    InspectionSubAreaObservation,
     InspectionType,
     InspectionWorkflowHistory,
     MediaType,
@@ -496,15 +498,48 @@ def start_options(db: Session = Depends(get_db), user: User = Depends(get_curren
 
 @router.get("/checklist")
 def checklist(contract_id: int, station_id: int, inspection_id: int | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Return checklist for normal station access or an authorised emergency draft.
+
+    Emergency inspections intentionally bypass normal station mapping at start time.
+    The same bypass must continue while loading the entry form; otherwise the draft
+    opens successfully and then fails on checklist load with 403.
+    """
+
     try:
         require_station_access(db, user, station_id)
     except HTTPException as exc:
-        if exc.status_code != 403 or not inspection_id:
+        if exc.status_code != 403:
             raise
-        inspection = db.get(Inspection, inspection_id)
-        if not inspection or int(inspection.station_id) != int(station_id):
-            raise
-        require_inspection_station_access_for_edit(db, user, inspection)
+
+        inspection = None
+        if inspection_id:
+            inspection = db.get(Inspection, inspection_id)
+            if not inspection or int(inspection.station_id) != int(station_id) or int(inspection.contract_id) != int(contract_id):
+                raise
+        else:
+            # Backward-compatible fallback for older/cached frontend builds that do
+            # not pass inspection_id to /checklist. Only the logged-in user's own
+            # draft/returned emergency inspection can use this path.
+            inspection = (
+                db.query(Inspection)
+                .filter(
+                    Inspection.submitted_by == user.id,
+                    Inspection.station_id == station_id,
+                    Inspection.contract_id == contract_id,
+                    Inspection.status.in_([InspectionStatus.DRAFT, InspectionStatus.RETURNED_FOR_CLARIFICATION]),
+                )
+                .order_by(Inspection.id.desc())
+                .first()
+            )
+            if not inspection:
+                raise
+
+        try:
+            require_inspection_station_access_for_edit(db, user, inspection)
+        except HTTPException:
+            # Preserve the original station-access denial instead of leaking whether
+            # another inspection id exists.
+            raise exc
 
     contract = db.get(Contract, contract_id)
     if not contract:

@@ -12,3 +12,5 @@ class MonthlyCalculationResponse(BaseModel):
     average_score: float
     is_penalty_applicable: bool
     penalty_amount: float
+    approved_inspection_count: int = 0
+    pending_gm_decision_count: int = 0

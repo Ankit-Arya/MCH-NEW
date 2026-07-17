@@ -1,4 +1,6 @@
-<template>
+from pathlib import Path
+
+DASHBOARD_VIEW = r"""<template>
   <AppLayout>
     <section class="card hero-panel dashboard-hero">
       <div class="toolbar hero-toolbar">
@@ -534,3 +536,35 @@ onMounted(async () => { await loadMaster(); await load() })
   .combo-menu { position: relative; top: 6px; max-height: 240px; }
 }
 </style>
+"""
+
+
+def find_project_root():
+    current = Path.cwd().resolve()
+    candidates = [current, current.parent]
+    if current.name.lower() == "scripts":
+        candidates.append(current.parent.parent)
+    for base in candidates:
+        if (base / "frontend" / "src" / "views").exists():
+            return base
+    raise RuntimeError("Could not find project root. Run this script from mch-inspection-platform root or backend/scripts.")
+
+
+def main():
+    root = find_project_root()
+    target = root / "frontend" / "src" / "views" / "DashboardView.vue"
+    if not target.exists():
+        raise RuntimeError("DashboardView.vue not found at {}".format(target))
+    backup = target.with_suffix(".vue.dashboard-filter-revamp.bak")
+    if not backup.exists():
+        backup.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+    target.write_text(DASHBOARD_VIEW, encoding="utf-8")
+    print("Dashboard filter/report revamp applied:")
+    print("- {}".format(target))
+    print("Backup saved at:")
+    print("- {}".format(backup))
+    print("Rebuild frontend with: docker compose up -d --build frontend")
+
+
+if __name__ == "__main__":
+    main()

@@ -405,7 +405,7 @@ onMounted(async () => {
     const stationId = route.query.station_id || inspection.value.station_id;
     const check = (
       await api.get(
-        `/inspections/checklist?contract_id=${contractId}&station_id=${stationId}`,
+        `/inspections/checklist?contract_id=${contractId}&station_id=${stationId}&inspection_id=${route.params.id}`,
       )
     ).data;
     checklist.value = {
