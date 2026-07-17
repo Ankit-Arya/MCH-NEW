@@ -358,9 +358,8 @@ async function saveEntry(form) {
 
   try {
     const payload = {
-      attribute_id: Number(form.attribute_id),
-      sub_area_id: isOther ? null : Number(form.sub_area_id),
-      custom_sub_area_name: isOther ? String(form.custom_sub_area_name || '').trim() : null,
+      attribute_id: form.attribute_id,
+      sub_area_id: form.sub_area_id,
       grade_code: form.grade_code,
       remarks: form.remarks,
       captured_latitude: metadata.latitude,
