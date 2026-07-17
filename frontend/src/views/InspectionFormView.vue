@@ -211,6 +211,21 @@ function getSubAreaById(id) {
   return subAreas.value.find((s) => Number(s.id) === Number(id)) || null;
 }
 
+function isOtherSubAreaPayload(form) {
+  return !form.sub_area_id && String(form.custom_sub_area_name || '').trim().length > 0;
+}
+
+function customSubAreaDraft(form) {
+  const name = String(form.custom_sub_area_name || '').trim();
+  return {
+    id: null,
+    name: name || 'Other sub-area',
+    photo_min_required: 1,
+    photo_max_allowed: 3,
+    is_custom: true,
+  };
+}
+
 function onSubAreaChange(subArea) {
   selectedSubArea.value = subArea;
   clearMedia();
@@ -310,7 +325,8 @@ async function saveEntry(form) {
     return;
   }
 
-  const subArea = getSubAreaById(form.sub_area_id);
+  const isOther = isOtherSubAreaPayload(form);
+  const subArea = isOther ? customSubAreaDraft(form) : getSubAreaById(form.sub_area_id);
   const minRequired = Math.max(1, Number(subArea?.photo_min_required || 1));
   const maxAllowed = Math.max(
     minRequired,
@@ -321,6 +337,10 @@ async function saveEntry(form) {
 
   if (!subArea) {
     error.value = "Please select a valid sub-area before saving";
+    return;
+  }
+  if (isOther && String(form.custom_sub_area_name || '').trim().length < 2) {
+    error.value = "Enter Other sub-area name before saving";
     return;
   }
   if (photos.length < minRequired) {
