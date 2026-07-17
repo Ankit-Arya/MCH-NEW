@@ -328,37 +328,16 @@ def _transfer_line_manager_with_replacement(
     if old_dgm.id == new_dgm.id:
         raise HTTPException(status_code=422, detail="Selected LM is already under this DGM")
 
-    # LM TRANSFER REPLACEMENT ANY ACTIVE LM V2
-    # Replacement LM may be any active LM except the transferred LM. If that replacement
-    # is not already under the old/current DGM, place the replacement under old DGM first
-    # so the previous SM/EIT team remains inside the old DGM hierarchy.
     replacement_parent_rows = _active_reporting_parent_rows(db, replacement_lm.id, relation_type)
-    replacement_old_active_dgm_parents = [
-        row for row in replacement_parent_rows
-        if row.supervisor is not None and _role_code(row.supervisor) in DGM_ROLES
-    ]
-    replacement_previous_dgm_parents = [
-        {
-            "id": row.supervisor_user_id,
-            "name": row.supervisor.name if row.supervisor else None,
-            "role": row.supervisor.role.code.value if row.supervisor and row.supervisor.role else None,
-        }
-        for row in replacement_old_active_dgm_parents
-    ]
-    replacement_under_old_dgm = any(row.supervisor_user_id == old_dgm.id for row in replacement_old_active_dgm_parents)
-    replacement_lm_moved_to_old_dgm = False
-
+    replacement_under_old_dgm = any(row.supervisor_user_id == old_dgm.id for row in replacement_parent_rows)
     if not replacement_under_old_dgm:
-        _ensure_no_reporting_cycle(db, old_dgm.id, replacement_lm.id)
-        for row in replacement_old_active_dgm_parents:
-            row.is_active = False
-        _get_or_create_reporting_link(
-            db,
-            supervisor_user_id=old_dgm.id,
-            subordinate_user_id=replacement_lm.id,
-            relation_type=relation_type,
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Replacement LM must be an active LM under the old DGM so the previous station team "
+                "stays in the same DGM hierarchy."
+            ),
         )
-        replacement_lm_moved_to_old_dgm = True
 
     # 1. Move only the LM under the new DGM.
     for row in parent_rows:
@@ -425,8 +404,6 @@ def _transfer_line_manager_with_replacement(
             "new_dgm_name": new_dgm.name,
             "replacement_lm_user_id": replacement_lm.id,
             "replacement_lm_name": replacement_lm.name,
-            "replacement_lm_auto_mapped_to_old_dgm": replacement_lm_moved_to_old_dgm,
-            "replacement_lm_previous_dgm_parents": replacement_previous_dgm_parents,
             "moved_sm_eit_count": len(moved_children),
             "moved_sm_eit_users": moved_children,
             "untouched_non_field_children": untouched_children,
@@ -444,8 +421,6 @@ def _transfer_line_manager_with_replacement(
         "old_dgm_user_id": old_dgm.id,
         "new_dgm_user_id": new_dgm.id,
         "replacement_lm_user_id": replacement_lm.id,
-        "replacement_lm_auto_mapped_to_old_dgm": replacement_lm_moved_to_old_dgm,
-        "replacement_lm_previous_dgm_parents": replacement_previous_dgm_parents,
         "moved_sm_eit_count": len(moved_children),
         "moved_sm_eit_users": moved_children,
         "untouched_non_field_children": untouched_children,

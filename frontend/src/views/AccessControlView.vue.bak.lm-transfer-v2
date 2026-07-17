@@ -302,7 +302,6 @@
 
       <div class="transfer-preview">
         <div><span>Current DGM</span><strong>{{ transferOldDgm ? `${transferOldDgm.name} - ${roleLabel(transferOldDgm.role)}` : 'Select an LM to detect current DGM' }}</strong></div>
-        <div><span>Replacement placement</span><strong>{{ transferReplacementPlacementText }}</strong></div>
         <div><span>SM/EIT team to hand over</span><strong>{{ transferChildUsers.length }} user{{ transferChildUsers.length === 1 ? '' : 's' }}</strong></div>
         <p v-if="transferChildUsers.length">
           {{ transferChildUsers.map((u) => u.name).slice(0, 6).join(', ') }}<template v-if="transferChildUsers.length > 6"> and {{ transferChildUsers.length - 6 }} more</template>
@@ -484,23 +483,14 @@ const transferChildUsers = computed(() => {
   const children = childMap.value.get(Number(transferLmId.value)) || []
   return children.filter((user) => ['STATION_MANAGER', 'EIT_MEMBER'].includes(user.role))
 })
-// LM TRANSFER REPLACEMENT ANY ACTIVE LM V2
-const transferReplacementLmCandidates = computed(() => transferLmUsers.value.filter((user) => Number(user.id) !== Number(transferLmId.value)))
-const transferReplacementLmIsOutsideOldDgm = computed(() => {
+const transferReplacementLmCandidates = computed(() => {
   const oldDgm = transferOldDgm.value
-  const replacementId = Number(transferReplacementLmId.value || 0)
-  if (!oldDgm || !replacementId) return false
-  const parents = parentMap.value.get(replacementId) || []
-  return !parents.some((parent) => Number(parent.id) === Number(oldDgm.id))
-})
-const transferReplacementPlacementText = computed(() => {
-  const replacement = userById.value[Number(transferReplacementLmId.value || 0)]
-  if (!replacement) return 'Select a replacement LM'
-  if (!transferOldDgm.value) return 'Current DGM not detected yet'
-  if (transferReplacementLmIsOutsideOldDgm.value) {
-    return `${replacement.name} will be mapped under ${transferOldDgm.value.name} before handover`
-  }
-  return `${replacement.name} is already under ${transferOldDgm.value.name}`
+  return transferLmUsers.value.filter((user) => {
+    if (Number(user.id) === Number(transferLmId.value)) return false
+    if (!oldDgm) return true
+    const parents = parentMap.value.get(Number(user.id)) || []
+    return parents.some((parent) => Number(parent.id) === Number(oldDgm.id))
+  })
 })
 const canTransferLm = computed(() => Boolean(
   transferLmId.value &&
