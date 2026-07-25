@@ -14,6 +14,7 @@ from app.api.v1.endpoints import (
     weekly_compliance,
     help,
     evidence_preview,
+    inspection_report_json,
 )
 
 api_router = APIRouter()
@@ -26,6 +27,7 @@ api_router.include_router(access_control.router, prefix="/access-control", tags=
 # /api/v1/inspections/media/{media_id}/preview is always available.
 api_router.include_router(evidence_preview.router, prefix="/inspections/media", tags=["Inspection Evidence Preview"])
 api_router.include_router(inspections.router, prefix="/inspections", tags=["Inspections"])
+api_router.include_router(inspection_report_json.router, prefix="/inspection_json", tags=["Inspections JSON"])
 
 api_router.include_router(weekly_compliance.router, prefix="/weekly-compliance", tags=["Weekly Compliance"])
 api_router.include_router(kpi_chemicals.router, prefix="/kpi-chemicals", tags=["KPI Chemicals"])
